@@ -243,6 +243,32 @@ def _render_energy_system() -> None:
         fig.update_layout(height=360, margin=dict(l=10, r=10, t=24, b=10), showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
+    mix_columns = ["nuclear_generation_twh", "fossil_generation_twh", "renewables_generation_twh"]
+    mix_frame = year_frame[["year", *mix_columns]].melt(
+        id_vars="year",
+        value_vars=mix_columns,
+        var_name="source",
+        value_name="value",
+    )
+    mix_frame = mix_frame.dropna(subset=["value"])
+    mix_frame["source"] = mix_frame["source"].map(
+        {
+            "nuclear_generation_twh": "Nuclear",
+            "fossil_generation_twh": "Fossil",
+            "renewables_generation_twh": "Renewables",
+        }
+    )
+    fig = px.area(
+        mix_frame,
+        x="year",
+        y="value",
+        color="source",
+        labels={"year": "Year", "value": "TWh", "source": "Source"},
+        color_discrete_sequence=["#d24f64", "#7f6a55", "#4e9f7f"],
+    )
+    fig.update_layout(height=360, margin=dict(l=10, r=10, t=24, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+
     display_summary = summary_frame[
         [
             "country_name",
@@ -278,6 +304,9 @@ def _render_energy_system() -> None:
             "electricity_generation_twh",
             "electricity_demand_twh",
             "net_electricity_imports_twh",
+            "fossil_generation_twh",
+            "renewables_generation_twh",
+            "clean_generation_twh",
             "estimated_capacity_factor_percent",
         ]
     ].rename(
@@ -288,6 +317,9 @@ def _render_energy_system() -> None:
             "electricity_generation_twh": "generation_twh",
             "electricity_demand_twh": "demand_twh",
             "net_electricity_imports_twh": "net_imports_twh",
+            "fossil_generation_twh": "fossil_twh",
+            "renewables_generation_twh": "renewables_twh",
+            "clean_generation_twh": "clean_twh",
             "estimated_capacity_factor_percent": "usage_pct",
         }
     )
