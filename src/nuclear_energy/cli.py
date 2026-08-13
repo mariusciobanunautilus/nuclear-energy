@@ -32,6 +32,7 @@ from nuclear_energy.sources.federal_register import (
     fetch_federal_register_documents,
 )
 from nuclear_energy.sources.gdelt import DEFAULT_GDELT_QUERY, fetch_gdelt_documents
+from nuclear_energy.sources.eur_lex import DEFAULT_EUR_LEX_QUERY, fetch_eur_lex_documents
 from nuclear_energy.sources.rss import fetch_rss_feeds
 
 
@@ -75,6 +76,21 @@ def _ingest_federal_register(args: argparse.Namespace) -> int:
         return 1
     stored = upsert_documents(documents)
     print(f"Stored {stored} Federal Register document(s).")
+    return 0
+
+
+def _ingest_eur_lex(args: argparse.Namespace) -> int:
+    try:
+        documents = fetch_eur_lex_documents(
+            query=args.query,
+            limit=args.limit,
+            timeout=args.timeout,
+        )
+    except httpx.HTTPError as exc:
+        print(_describe_source_http_error("EUR-Lex", exc))
+        return 1
+    stored = upsert_documents(documents)
+    print(f"Stored {stored} EUR-Lex document(s).")
     return 0
 
 
@@ -275,6 +291,15 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_federal_register.add_argument("--limit", type=int, default=25, help="Maximum documents to store.")
     ingest_federal_register.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout for the API request.")
     ingest_federal_register.set_defaults(func=_ingest_federal_register)
+
+    ingest_eur_lex = subparsers.add_parser(
+        "ingest-eur-lex",
+        help="Search EUR-Lex metadata through the EU Publications Office Cellar SPARQL endpoint.",
+    )
+    ingest_eur_lex.add_argument("--query", default=DEFAULT_EUR_LEX_QUERY, help="Keyword terms to match in English titles.")
+    ingest_eur_lex.add_argument("--limit", type=int, default=25, help="Maximum documents to store.")
+    ingest_eur_lex.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout for the SPARQL request.")
+    ingest_eur_lex.set_defaults(func=_ingest_eur_lex)
 
     extract_documents = subparsers.add_parser(
         "extract-documents",

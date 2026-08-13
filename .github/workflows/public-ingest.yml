@@ -36,5 +36,6 @@ jobs:
 
           nuclear-energy ingest-rss --limit 20
           nuclear-energy ingest-federal-register --limit 20
+          nuclear-energy ingest-eur-lex --limit 20
           nuclear-energy ingest-gdelt --limit 20 || echo "GDELT ingest skipped or rate-limited."
           nuclear-energy extract-documents --limit 30
