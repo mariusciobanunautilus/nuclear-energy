@@ -226,7 +226,7 @@ def _frame(items) -> pd.DataFrame:
 
 
 def _format_datetime(value: datetime | None) -> str:
-    if value is None:
+    if value is None or pd.isna(value):
         return ""
     return value.strftime("%Y-%m-%d %H:%M")
 
