@@ -60,6 +60,8 @@ Open the local dashboard.
 nuclear-energy dashboard
 ```
 
+For Streamlit Community Cloud, use `streamlit_app.py` as the main file path.
+
 Export stored documents.
 
 ```bash
