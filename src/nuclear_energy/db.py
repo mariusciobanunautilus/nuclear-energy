@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Optional
 
 from sqlalchemy import JSON, Column, DateTime, Integer, MetaData, Table, Text, UniqueConstraint, create_engine
@@ -39,6 +40,25 @@ class StoredDocument:
     summary: str | None = None
 
 
+@dataclass(frozen=True)
+class StoredChunk:
+    id: str
+    document_id: str
+    title: str
+    url: str
+    chunk_index: int
+    content: str
+
+
+@dataclass(frozen=True)
+class ChunkSearchResult:
+    title: str
+    url: str
+    chunk_index: int
+    content: str
+    score: float
+
+
 ingested_documents = Table(
     "ingested_documents",
     metadata,
@@ -64,6 +84,7 @@ ingested_documents = Table(
 document_chunks = Table(
     "document_chunks",
     metadata,
+    Column("id", UUID(as_uuid=False), primary_key=True, server_default=sql_text("extensions.gen_random_uuid()")),
     Column("document_id", UUID(as_uuid=False), nullable=False),
     Column("chunk_index", Integer, nullable=False),
     Column("content", Text, nullable=False),
@@ -193,6 +214,143 @@ def replace_document_chunks(document_id: str, content: str, chunks: Sequence[str
         session.commit()
 
     return len(rows)
+
+
+def fetch_chunks_needing_embeddings(limit: int = 25, model: str | None = None) -> list[StoredChunk]:
+    if limit < 1:
+        return []
+
+    statement = sql_text(
+        """
+        select
+          c.id,
+          c.document_id,
+          d.title,
+          d.url,
+          c.chunk_index,
+          c.content
+        from public.document_chunks as c
+        join public.ingested_documents as d
+          on d.id = c.document_id
+        where c.embedding is null
+          or (
+            cast(:model as text) is not null
+            and c.embedding_model is distinct from cast(:model as text)
+          )
+        order by
+          d.published_at desc nulls last,
+          d.created_at desc,
+          c.chunk_index
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"limit": limit, "model": model}).mappings().all()
+
+    return [
+        StoredChunk(
+            id=str(row["id"]),
+            document_id=str(row["document_id"]),
+            title=row["title"],
+            url=row["url"],
+            chunk_index=row["chunk_index"],
+            content=row["content"],
+        )
+        for row in rows
+    ]
+
+
+def update_chunk_embeddings(chunk_embeddings: Iterable[tuple[str, Sequence[float]]], model: str) -> int:
+    rows = [(chunk_id, format_vector_literal(embedding)) for chunk_id, embedding in chunk_embeddings]
+    if not rows:
+        return 0
+
+    statement = sql_text(
+        """
+        update public.document_chunks
+        set
+          embedding = cast(:embedding as extensions.vector),
+          embedding_model = :model,
+          updated_at = now()
+        where id = cast(:chunk_id as uuid)
+        """
+    )
+
+    with Session(get_engine()) as session:
+        for chunk_id, embedding in rows:
+            session.execute(statement, {"chunk_id": chunk_id, "embedding": embedding, "model": model})
+        session.commit()
+
+    return len(rows)
+
+
+def semantic_search_chunks(
+    query_embedding: Sequence[float],
+    *,
+    limit: int = 5,
+    source_name: Optional[str] = None,
+) -> list[ChunkSearchResult]:
+    if limit < 1:
+        return []
+
+    conditions = ["c.embedding is not null"]
+    params: dict[str, object] = {
+        "embedding": format_vector_literal(query_embedding),
+        "limit": limit,
+    }
+    if source_name:
+        conditions.append("d.source_name = :source_name")
+        params["source_name"] = source_name
+
+    statement = sql_text(
+        f"""
+        with query_embedding as (
+          select cast(:embedding as extensions.vector) as value
+        )
+        select
+          d.title,
+          d.url,
+          c.chunk_index,
+          c.content,
+          1 - (c.embedding <=> query_embedding.value) as score
+        from public.document_chunks as c
+        join public.ingested_documents as d
+          on d.id = c.document_id
+        cross join query_embedding
+        where {" and ".join(conditions)}
+        order by c.embedding <=> query_embedding.value
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        ChunkSearchResult(
+            title=row["title"],
+            url=row["url"],
+            chunk_index=row["chunk_index"],
+            content=row["content"],
+            score=float(row["score"]),
+        )
+        for row in rows
+    ]
+
+
+def format_vector_literal(embedding: Sequence[float]) -> str:
+    if not embedding:
+        raise ValueError("Embedding must contain at least one value.")
+
+    values = []
+    for value in embedding:
+        number = float(value)
+        if not isfinite(number):
+            raise ValueError("Embedding values must be finite numbers.")
+        values.append(f"{number:.12g}")
+
+    return f"[{','.join(values)}]"
 
 
 def _estimate_token_count(text: str) -> int:

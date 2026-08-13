@@ -2,8 +2,24 @@ from __future__ import annotations
 
 import argparse
 
+from openai import OpenAIError
+
 from nuclear_energy.config import get_settings
-from nuclear_energy.db import fetch_documents_without_chunks, replace_document_chunks, upsert_documents
+from nuclear_energy.db import (
+    fetch_chunks_needing_embeddings,
+    fetch_documents_without_chunks,
+    replace_document_chunks,
+    semantic_search_chunks,
+    update_chunk_embeddings,
+    upsert_documents,
+)
+from nuclear_energy.embeddings import (
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    DEFAULT_EMBEDDING_MODEL,
+    create_embedding,
+    create_embeddings,
+    dimensions_for_model,
+)
 from nuclear_energy.extraction.text import chunk_text, fetch_article_text
 from nuclear_energy.sources.rss import fetch_rss_feeds
 
@@ -56,6 +72,89 @@ def _extract_documents(args: argparse.Namespace) -> int:
     return 0 if extracted or not failed else 1
 
 
+def _embed_chunks(args: argparse.Namespace) -> int:
+    chunks = fetch_chunks_needing_embeddings(limit=args.limit, model=args.model)
+    if not chunks:
+        print("No chunks need embeddings.")
+        return 0
+
+    total = 0
+    dimensions = dimensions_for_model(args.model)
+
+    for batch in _batched(chunks, args.batch_size):
+        try:
+            vectors = create_embeddings(
+                [chunk.content for chunk in batch],
+                model=args.model,
+                dimensions=dimensions,
+                batch_size=args.batch_size,
+            )
+        except (OpenAIError, RuntimeError) as exc:
+            print(_describe_openai_error(exc))
+            return 1
+        total += update_chunk_embeddings(
+            ((chunk.id, vector) for chunk, vector in zip(batch, vectors)),
+            model=args.model,
+        )
+        print(f"Embedded {total}/{len(chunks)} chunk(s).")
+
+    print(f"Stored embeddings for {total} chunk(s) using {args.model}.")
+    return 0
+
+
+def _search_chunks(args: argparse.Namespace) -> int:
+    dimensions = dimensions_for_model(args.model)
+    try:
+        query_embedding = create_embedding(args.query, model=args.model, dimensions=dimensions)
+    except (OpenAIError, RuntimeError) as exc:
+        print(_describe_openai_error(exc))
+        return 1
+
+    results = semantic_search_chunks(
+        query_embedding,
+        limit=args.limit,
+        source_name=args.source_name,
+    )
+
+    if not results:
+        print("No embedded chunks matched. Run embed-chunks first.")
+        return 0
+
+    for index, result in enumerate(results, start=1):
+        preview = result.content.replace("\n", " ")
+        if len(preview) > args.preview_chars:
+            preview = f"{preview[: args.preview_chars].rstrip()}..."
+        print(f"{index}. score={result.score:.3f} chunk={result.chunk_index} {result.title}")
+        print(f"   {result.url}")
+        print(f"   {preview}")
+
+    return 0
+
+
+def _describe_openai_error(exc: Exception) -> str:
+    message = str(exc)
+    lower_message = message.lower()
+    if "openai_api_key" in lower_message:
+        return "OPENAI_API_KEY is missing. Add it to .env.local, then rerun this command."
+    if (
+        "credit_balance_exhausted" in lower_message
+        or "insufficient_quota" in lower_message
+        or "no credits" in lower_message
+    ):
+        return (
+            "OpenAI API credits are exhausted. Add credits at "
+            "https://platform.openai.com/settings/organization/billing, then rerun this command."
+        )
+    return f"OpenAI API request failed: {message}"
+
+
+def _batched(items: list, size: int):
+    if size < 1:
+        raise SystemExit("--batch-size must be at least 1.")
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="nuclear-energy")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -75,6 +174,36 @@ def build_parser() -> argparse.ArgumentParser:
     extract_documents.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout per article.")
     extract_documents.add_argument("--source-name", help="Only extract documents from this exact source name.")
     extract_documents.set_defaults(func=_extract_documents)
+
+    embed_chunks = subparsers.add_parser(
+        "embed-chunks",
+        help="Create OpenAI embeddings for stored document chunks.",
+    )
+    embed_chunks.add_argument("--limit", type=int, default=25, help="Maximum chunks to embed.")
+    embed_chunks.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_EMBEDDING_BATCH_SIZE,
+        help="Maximum chunks to send to OpenAI in one request.",
+    )
+    embed_chunks.add_argument("--model", default=DEFAULT_EMBEDDING_MODEL, help="OpenAI embedding model.")
+    embed_chunks.set_defaults(func=_embed_chunks)
+
+    search_chunks = subparsers.add_parser(
+        "search-chunks",
+        help="Search embedded document chunks by meaning.",
+    )
+    search_chunks.add_argument("query", help="Natural-language search query.")
+    search_chunks.add_argument("--limit", type=int, default=5, help="Maximum search results.")
+    search_chunks.add_argument("--model", default=DEFAULT_EMBEDDING_MODEL, help="OpenAI embedding model.")
+    search_chunks.add_argument("--source-name", help="Only search chunks from this exact source name.")
+    search_chunks.add_argument(
+        "--preview-chars",
+        type=int,
+        default=360,
+        help="Maximum characters to print for each result preview.",
+    )
+    search_chunks.set_defaults(func=_search_chunks)
 
     return parser
 

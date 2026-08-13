@@ -25,10 +25,15 @@ class Settings(BaseModel):
 
 
 def _load_env_files() -> None:
-    for filename in (".env", ".env.local"):
-        path = ROOT_DIR / filename
-        if path.exists():
-            load_dotenv(path, override=False)
+    seen_dirs: set[Path] = set()
+    for directory in (Path.cwd(), ROOT_DIR):
+        if directory in seen_dirs:
+            continue
+        seen_dirs.add(directory)
+        for filename in (".env", ".env.local"):
+            path = directory / filename
+            if path.exists():
+                load_dotenv(path, override=False)
 
 
 def _split_csv_env(value: Optional[str]) -> list[str]:

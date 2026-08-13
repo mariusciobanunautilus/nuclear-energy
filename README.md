@@ -10,7 +10,8 @@ The project currently has a Supabase/Postgres schema for nuclear reference data 
 - Python project skeleton under `src/nuclear_energy`.
 - RSS ingestion CLI that normalizes feed entries and stores them in Postgres.
 - Article extraction and chunking CLI that stores clean text in `document_chunks`.
-- Document-ingestion tables with room for future OpenAI embeddings through `pgvector`.
+- OpenAI embedding CLI that stores chunk vectors in `pgvector`.
+- Semantic search CLI for finding relevant chunks by meaning.
 
 ## Setup
 
@@ -35,6 +36,13 @@ nuclear-energy ingest-rss --limit 20
 
 ```bash
 nuclear-energy extract-documents --limit 20
+```
+
+7. Embed stored chunks and try semantic search.
+
+```bash
+nuclear-energy embed-chunks --limit 20
+nuclear-energy search-chunks "small modular reactor licensing" --limit 5
 ```
 
 ## Tests
