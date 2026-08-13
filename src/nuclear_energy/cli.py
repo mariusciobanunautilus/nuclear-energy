@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
+from pathlib import Path
 
 from openai import OpenAIError
 
@@ -8,6 +11,7 @@ from nuclear_energy.config import get_settings
 from nuclear_energy.db import (
     fetch_chunks_needing_embeddings,
     fetch_documents_without_chunks,
+    fetch_documents_for_export,
     replace_document_chunks,
     semantic_search_chunks,
     update_chunk_embeddings,
@@ -20,6 +24,7 @@ from nuclear_energy.embeddings import (
     create_embeddings,
     dimensions_for_model,
 )
+from nuclear_energy.exports import documents_to_csv, documents_to_markdown
 from nuclear_energy.extraction.text import chunk_text, fetch_article_text
 from nuclear_energy.sources.rss import fetch_rss_feeds
 
@@ -131,6 +136,44 @@ def _search_chunks(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export_documents(args: argparse.Namespace) -> int:
+    documents = fetch_documents_for_export(
+        limit=args.limit,
+        source_name=args.source_name,
+        preview_chars=args.preview_chars,
+    )
+    if args.format == "csv":
+        content = documents_to_csv(documents)
+        default_name = "documents.csv"
+    else:
+        content = documents_to_markdown(documents)
+        default_name = "documents.md"
+
+    output_path = Path(args.output or Path("exports") / default_name)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content, encoding="utf-8")
+    print(f"Exported {len(documents)} document(s) to {output_path}.")
+    return 0
+
+
+def _dashboard(args: argparse.Namespace) -> int:
+    dashboard_path = Path(__file__).with_name("dashboard.py")
+    command = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(dashboard_path),
+        "--server.address",
+        args.address,
+        "--server.port",
+        str(args.port),
+        "--server.headless",
+        "true",
+    ]
+    return subprocess.call(command)
+
+
 def _describe_openai_error(exc: Exception) -> str:
     message = str(exc)
     lower_message = message.lower()
@@ -204,6 +247,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum characters to print for each result preview.",
     )
     search_chunks.set_defaults(func=_search_chunks)
+
+    export_documents = subparsers.add_parser(
+        "export-documents",
+        help="Export stored documents to CSV or Markdown.",
+    )
+    export_documents.add_argument("--format", choices=["csv", "markdown"], default="csv", help="Export format.")
+    export_documents.add_argument("--output", help="Output file path.")
+    export_documents.add_argument("--limit", type=int, default=100, help="Maximum documents to export.")
+    export_documents.add_argument("--source-name", help="Only export documents from this exact source name.")
+    export_documents.add_argument(
+        "--preview-chars",
+        type=int,
+        default=1200,
+        help="Maximum content characters per exported document.",
+    )
+    export_documents.set_defaults(func=_export_documents)
+
+    dashboard = subparsers.add_parser("dashboard", help="Open the Streamlit dashboard.")
+    dashboard.add_argument("--address", default="127.0.0.1", help="Dashboard host address.")
+    dashboard.add_argument("--port", type=int, default=8501, help="Dashboard port.")
+    dashboard.set_defaults(func=_dashboard)
 
     return parser
 

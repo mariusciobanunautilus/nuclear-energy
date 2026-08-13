@@ -12,6 +12,7 @@ The project currently has a Supabase/Postgres schema for nuclear reference data 
 - Article extraction and chunking CLI that stores clean text in `document_chunks`.
 - OpenAI embedding CLI that stores chunk vectors in `pgvector`.
 - Semantic search CLI for finding relevant chunks by meaning.
+- Streamlit dashboard for database status, keyword search, and exports.
 
 ## Setup
 
@@ -43,6 +44,19 @@ nuclear-energy extract-documents --limit 20
 ```bash
 nuclear-energy embed-chunks --limit 20
 nuclear-energy search-chunks "small modular reactor licensing" --limit 5
+```
+
+Open the local dashboard.
+
+```bash
+nuclear-energy dashboard
+```
+
+Export stored documents.
+
+```bash
+nuclear-energy export-documents --format csv --output exports/documents.csv
+nuclear-energy export-documents --format markdown --output exports/documents.md
 ```
 
 ## Tests

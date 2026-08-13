@@ -59,6 +59,65 @@ class ChunkSearchResult:
     score: float
 
 
+@dataclass(frozen=True)
+class DashboardMetrics:
+    document_count: int
+    documents_with_content: int
+    chunk_count: int
+    embedded_chunk_count: int
+    source_count: int
+    latest_published_at: datetime | None
+
+
+@dataclass(frozen=True)
+class SourceSummary:
+    source_name: str
+    source_kind: str
+    document_count: int
+    documents_with_content: int
+    chunk_count: int
+    embedded_chunk_count: int
+    latest_published_at: datetime | None
+
+
+@dataclass(frozen=True)
+class DocumentListItem:
+    id: str
+    title: str
+    url: str
+    source_name: str
+    source_kind: str
+    published_at: datetime | None
+    preview: str
+    chunk_count: int
+    embedded_chunk_count: int
+
+
+@dataclass(frozen=True)
+class KeywordSearchResult:
+    id: str
+    title: str
+    url: str
+    source_name: str
+    source_kind: str
+    published_at: datetime | None
+    snippet: str
+    score: float
+
+
+@dataclass(frozen=True)
+class DocumentExportRow:
+    title: str
+    url: str
+    source_name: str
+    source_kind: str
+    published_at: datetime | None
+    summary: str
+    content_preview: str
+    chunk_count: int
+    embedded_chunk_count: int
+
+
 ingested_documents = Table(
     "ingested_documents",
     metadata,
@@ -216,6 +275,289 @@ def replace_document_chunks(document_id: str, content: str, chunks: Sequence[str
     return len(rows)
 
 
+def fetch_dashboard_metrics() -> DashboardMetrics:
+    statement = sql_text(
+        """
+        select
+          (select count(*) from public.ingested_documents) as document_count,
+          (
+            select count(*)
+            from public.ingested_documents
+            where nullif(content, '') is not null
+          ) as documents_with_content,
+          (select count(*) from public.document_chunks) as chunk_count,
+          (
+            select count(*)
+            from public.document_chunks
+            where embedding is not null
+          ) as embedded_chunk_count,
+          (select count(distinct source_name) from public.ingested_documents) as source_count,
+          (select max(published_at) from public.ingested_documents) as latest_published_at
+        """
+    )
+
+    with Session(get_engine()) as session:
+        row = session.execute(statement).mappings().one()
+
+    return DashboardMetrics(
+        document_count=int(row["document_count"]),
+        documents_with_content=int(row["documents_with_content"]),
+        chunk_count=int(row["chunk_count"]),
+        embedded_chunk_count=int(row["embedded_chunk_count"]),
+        source_count=int(row["source_count"]),
+        latest_published_at=row["latest_published_at"],
+    )
+
+
+def fetch_source_summaries() -> list[SourceSummary]:
+    statement = sql_text(
+        """
+        with chunk_counts as (
+          select
+            document_id,
+            count(*) as chunk_count,
+            count(*) filter (where embedding is not null) as embedded_chunk_count
+          from public.document_chunks
+          group by document_id
+        )
+        select
+          d.source_name,
+          d.source_kind::text as source_kind,
+          count(*) as document_count,
+          count(*) filter (where nullif(d.content, '') is not null) as documents_with_content,
+          coalesce(sum(chunk_counts.chunk_count), 0) as chunk_count,
+          coalesce(sum(chunk_counts.embedded_chunk_count), 0) as embedded_chunk_count,
+          max(d.published_at) as latest_published_at
+        from public.ingested_documents as d
+        left join chunk_counts
+          on chunk_counts.document_id = d.id
+        group by d.source_name, d.source_kind
+        order by document_count desc, d.source_name
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement).mappings().all()
+
+    return [
+        SourceSummary(
+            source_name=row["source_name"],
+            source_kind=row["source_kind"],
+            document_count=int(row["document_count"]),
+            documents_with_content=int(row["documents_with_content"]),
+            chunk_count=int(row["chunk_count"]),
+            embedded_chunk_count=int(row["embedded_chunk_count"]),
+            latest_published_at=row["latest_published_at"],
+        )
+        for row in rows
+    ]
+
+
+def fetch_recent_documents(
+    *,
+    limit: int = 25,
+    source_name: Optional[str] = None,
+    preview_chars: int = 320,
+) -> list[DocumentListItem]:
+    if limit < 1:
+        return []
+
+    preview_chars = max(1, preview_chars)
+    conditions = []
+    params: dict[str, object] = {"limit": limit, "preview_chars": preview_chars}
+    if source_name:
+        conditions.append("d.source_name = :source_name")
+        params["source_name"] = source_name
+
+    statement = sql_text(
+        f"""
+        with chunk_counts as (
+          select
+            document_id,
+            count(*) as chunk_count,
+            count(*) filter (where embedding is not null) as embedded_chunk_count
+          from public.document_chunks
+          group by document_id
+        )
+        select
+          d.id,
+          d.title,
+          d.url,
+          d.source_name,
+          d.source_kind::text as source_kind,
+          d.published_at,
+          left(coalesce(nullif(d.summary, ''), nullif(d.content, ''), ''), :preview_chars) as preview,
+          coalesce(chunk_counts.chunk_count, 0) as chunk_count,
+          coalesce(chunk_counts.embedded_chunk_count, 0) as embedded_chunk_count
+        from public.ingested_documents as d
+        left join chunk_counts
+          on chunk_counts.document_id = d.id
+        {_where_clause(conditions)}
+        order by d.published_at desc nulls last, d.created_at desc
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        DocumentListItem(
+            id=str(row["id"]),
+            title=row["title"],
+            url=row["url"],
+            source_name=row["source_name"],
+            source_kind=row["source_kind"],
+            published_at=row["published_at"],
+            preview=row["preview"] or "",
+            chunk_count=int(row["chunk_count"]),
+            embedded_chunk_count=int(row["embedded_chunk_count"]),
+        )
+        for row in rows
+    ]
+
+
+def search_documents_keyword(
+    query: str,
+    *,
+    limit: int = 25,
+    source_name: Optional[str] = None,
+) -> list[KeywordSearchResult]:
+    query = query.strip()
+    if not query or limit < 1:
+        return []
+
+    conditions = ["documents.search_vector @@ q.value"]
+    params: dict[str, object] = {"query": query, "limit": limit}
+    if source_name:
+        conditions.append("documents.source_name = :source_name")
+        params["source_name"] = source_name
+
+    statement = sql_text(
+        f"""
+        with q as (
+          select websearch_to_tsquery('english', :query) as value
+        ),
+        documents as (
+          select
+            d.id,
+            d.title,
+            d.url,
+            d.source_name,
+            d.source_kind::text as source_kind,
+            d.published_at,
+            d.created_at,
+            coalesce(nullif(d.content, ''), nullif(d.summary, ''), d.title) as searchable_text,
+            to_tsvector(
+              'english',
+              concat_ws(' ', d.title, d.summary, d.content)
+            ) as search_vector
+          from public.ingested_documents as d
+        )
+        select
+          documents.id,
+          documents.title,
+          documents.url,
+          documents.source_name,
+          documents.source_kind,
+          documents.published_at,
+          ts_headline(
+            'english',
+            documents.searchable_text,
+            q.value,
+            'MaxWords=34, MinWords=12, ShortWord=3'
+          ) as snippet,
+          ts_rank_cd(documents.search_vector, q.value) as score
+        from documents
+        cross join q
+        where {" and ".join(conditions)}
+        order by score desc, documents.published_at desc nulls last, documents.created_at desc
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        KeywordSearchResult(
+            id=str(row["id"]),
+            title=row["title"],
+            url=row["url"],
+            source_name=row["source_name"],
+            source_kind=row["source_kind"],
+            published_at=row["published_at"],
+            snippet=row["snippet"] or "",
+            score=float(row["score"]),
+        )
+        for row in rows
+    ]
+
+
+def fetch_documents_for_export(
+    *,
+    limit: int = 100,
+    source_name: Optional[str] = None,
+    preview_chars: int = 1200,
+) -> list[DocumentExportRow]:
+    if limit < 1:
+        return []
+
+    preview_chars = max(1, preview_chars)
+    conditions = []
+    params: dict[str, object] = {"limit": limit, "preview_chars": preview_chars}
+    if source_name:
+        conditions.append("d.source_name = :source_name")
+        params["source_name"] = source_name
+
+    statement = sql_text(
+        f"""
+        with chunk_counts as (
+          select
+            document_id,
+            count(*) as chunk_count,
+            count(*) filter (where embedding is not null) as embedded_chunk_count
+          from public.document_chunks
+          group by document_id
+        )
+        select
+          d.title,
+          d.url,
+          d.source_name,
+          d.source_kind::text as source_kind,
+          d.published_at,
+          coalesce(d.summary, '') as summary,
+          left(coalesce(nullif(d.content, ''), nullif(d.summary, ''), ''), :preview_chars) as content_preview,
+          coalesce(chunk_counts.chunk_count, 0) as chunk_count,
+          coalesce(chunk_counts.embedded_chunk_count, 0) as embedded_chunk_count
+        from public.ingested_documents as d
+        left join chunk_counts
+          on chunk_counts.document_id = d.id
+        {_where_clause(conditions)}
+        order by d.published_at desc nulls last, d.created_at desc
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        DocumentExportRow(
+            title=row["title"],
+            url=row["url"],
+            source_name=row["source_name"],
+            source_kind=row["source_kind"],
+            published_at=row["published_at"],
+            summary=row["summary"] or "",
+            content_preview=row["content_preview"] or "",
+            chunk_count=int(row["chunk_count"]),
+            embedded_chunk_count=int(row["embedded_chunk_count"]),
+        )
+        for row in rows
+    ]
+
+
 def fetch_chunks_needing_embeddings(limit: int = 25, model: str | None = None) -> list[StoredChunk]:
     if limit < 1:
         return []
@@ -351,6 +693,12 @@ def format_vector_literal(embedding: Sequence[float]) -> str:
         values.append(f"{number:.12g}")
 
     return f"[{','.join(values)}]"
+
+
+def _where_clause(conditions: Sequence[str]) -> str:
+    if not conditions:
+        return ""
+    return f"where {' and '.join(conditions)}"
 
 
 def _estimate_token_count(text: str) -> int:
