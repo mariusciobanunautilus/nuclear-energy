@@ -6,14 +6,14 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Optional
 
-from sqlalchemy import JSON, Column, DateTime, Integer, MetaData, Table, Text, UniqueConstraint, create_engine
+from sqlalchemy import JSON, Column, DateTime, Integer, MetaData, Numeric, Table, Text, UniqueConstraint, create_engine
 from sqlalchemy import delete, select, text as sql_text, update
 from sqlalchemy.dialects.postgresql import ENUM, UUID
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from nuclear_energy.config import get_settings
-from nuclear_energy.models import RawDocument
+from nuclear_energy.models import CountryEnergyYear, RawDocument
 
 
 metadata = MetaData(schema="public")
@@ -118,6 +118,48 @@ class DocumentExportRow:
     embedded_chunk_count: int
 
 
+@dataclass(frozen=True)
+class EnergySystemMetrics:
+    country_count: int
+    latest_year: int | None
+    nuclear_generation_twh: float | None
+    nuclear_capacity_gw: float | None
+    electricity_generation_twh: float | None
+    electricity_demand_twh: float | None
+    net_electricity_imports_twh: float | None
+
+
+@dataclass(frozen=True)
+class EnergyCountrySummary:
+    iso_code: str
+    country_name: str
+    latest_year: int
+    nuclear_generation_twh: float | None
+    nuclear_share_electricity_percent: float | None
+    nuclear_capacity_gw: float | None
+    electricity_generation_twh: float | None
+    electricity_demand_twh: float | None
+    net_electricity_imports_twh: float | None
+    estimated_capacity_factor_percent: float | None
+
+
+@dataclass(frozen=True)
+class EnergyYearRecord:
+    iso_code: str
+    country_name: str
+    year: int
+    nuclear_generation_twh: float | None
+    nuclear_share_electricity_percent: float | None
+    nuclear_capacity_gw: float | None
+    electricity_generation_twh: float | None
+    electricity_demand_twh: float | None
+    net_electricity_imports_twh: float | None
+    fossil_generation_twh: float | None
+    renewables_generation_twh: float | None
+    clean_generation_twh: float | None
+    estimated_capacity_factor_percent: float | None
+
+
 ingested_documents = Table(
     "ingested_documents",
     metadata,
@@ -151,6 +193,30 @@ document_chunks = Table(
     Column("embedding_model", Text),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("document_id", "chunk_index", name="document_chunks_document_chunk_unique"),
+)
+
+country_energy_years = Table(
+    "country_energy_years",
+    metadata,
+    Column("id", UUID(as_uuid=False), primary_key=True, server_default=sql_text("extensions.gen_random_uuid()")),
+    Column("iso_code", Text, nullable=False),
+    Column("country_name", Text, nullable=False),
+    Column("year", Integer, nullable=False),
+    Column("nuclear_generation_twh", Numeric(12, 3)),
+    Column("nuclear_share_electricity_percent", Numeric(6, 3)),
+    Column("nuclear_capacity_gw", Numeric(12, 3)),
+    Column("electricity_generation_twh", Numeric(12, 3)),
+    Column("electricity_demand_twh", Numeric(12, 3)),
+    Column("net_electricity_imports_twh", Numeric(12, 3)),
+    Column("fossil_generation_twh", Numeric(12, 3)),
+    Column("renewables_generation_twh", Numeric(12, 3)),
+    Column("clean_generation_twh", Numeric(12, 3)),
+    Column("source_name", Text, nullable=False),
+    Column("source_url", Text, nullable=False),
+    Column("raw_payload", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("iso_code", "year", name="country_energy_years_iso_year_unique"),
 )
 
 
@@ -197,6 +263,53 @@ def upsert_documents(documents: Iterable[RawDocument]) -> int:
         session.execute(
             statement.on_conflict_do_update(
                 index_elements=["source_kind", "external_id"],
+                set_=update_columns,
+            )
+        )
+        session.commit()
+
+    return len(rows)
+
+
+def upsert_country_energy_years(records: Iterable[CountryEnergyYear]) -> int:
+    rows = []
+    now = datetime.now(timezone.utc)
+    for record in records:
+        rows.append(
+            {
+                "iso_code": record.iso_code.upper(),
+                "country_name": record.country_name,
+                "year": record.year,
+                "nuclear_generation_twh": record.nuclear_generation_twh,
+                "nuclear_share_electricity_percent": record.nuclear_share_electricity_percent,
+                "nuclear_capacity_gw": record.nuclear_capacity_gw,
+                "electricity_generation_twh": record.electricity_generation_twh,
+                "electricity_demand_twh": record.electricity_demand_twh,
+                "net_electricity_imports_twh": record.net_electricity_imports_twh,
+                "fossil_generation_twh": record.fossil_generation_twh,
+                "renewables_generation_twh": record.renewables_generation_twh,
+                "clean_generation_twh": record.clean_generation_twh,
+                "source_name": record.source_name,
+                "source_url": record.source_url,
+                "raw_payload": record.raw_payload,
+                "updated_at": now,
+            }
+        )
+
+    if not rows:
+        return 0
+
+    statement = insert(country_energy_years).values(rows)
+    update_columns = {
+        column: getattr(statement.excluded, column)
+        for column in rows[0]
+        if column not in {"iso_code", "year"}
+    }
+
+    with Session(get_engine()) as session:
+        session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["iso_code", "year"],
                 set_=update_columns,
             )
         )
@@ -558,6 +671,155 @@ def fetch_documents_for_export(
     ]
 
 
+def fetch_energy_system_metrics() -> EnergySystemMetrics:
+    statement = sql_text(
+        """
+        with latest_country_years as (
+          select *
+          from (
+            select
+              y.*,
+              row_number() over (partition by y.iso_code order by y.year desc) as rank
+            from public.country_energy_years as y
+          ) ranked
+          where rank = 1
+        )
+        select
+          count(*) as country_count,
+          max(year) as latest_year,
+          sum(nuclear_generation_twh) as nuclear_generation_twh,
+          sum(nuclear_capacity_gw) as nuclear_capacity_gw,
+          sum(electricity_generation_twh) as electricity_generation_twh,
+          sum(electricity_demand_twh) as electricity_demand_twh,
+          sum(net_electricity_imports_twh) as net_electricity_imports_twh
+        from latest_country_years
+        """
+    )
+
+    with Session(get_engine()) as session:
+        row = session.execute(statement).mappings().one()
+
+    return EnergySystemMetrics(
+        country_count=int(row["country_count"]),
+        latest_year=row["latest_year"],
+        nuclear_generation_twh=_optional_float(row["nuclear_generation_twh"]),
+        nuclear_capacity_gw=_optional_float(row["nuclear_capacity_gw"]),
+        electricity_generation_twh=_optional_float(row["electricity_generation_twh"]),
+        electricity_demand_twh=_optional_float(row["electricity_demand_twh"]),
+        net_electricity_imports_twh=_optional_float(row["net_electricity_imports_twh"]),
+    )
+
+
+def fetch_energy_country_summaries(limit: int = 250) -> list[EnergyCountrySummary]:
+    if limit < 1:
+        return []
+
+    statement = sql_text(
+        """
+        with latest_country_years as (
+          select *
+          from (
+            select
+              y.*,
+              row_number() over (partition by y.iso_code order by y.year desc) as rank
+            from public.country_energy_years as y
+          ) ranked
+          where rank = 1
+        )
+        select
+          iso_code,
+          country_name,
+          year as latest_year,
+          nuclear_generation_twh,
+          nuclear_share_electricity_percent,
+          nuclear_capacity_gw,
+          electricity_generation_twh,
+          electricity_demand_twh,
+          net_electricity_imports_twh
+        from latest_country_years
+        order by
+          nuclear_generation_twh desc nulls last,
+          nuclear_capacity_gw desc nulls last,
+          country_name
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"limit": limit}).mappings().all()
+
+    return [
+        EnergyCountrySummary(
+            iso_code=row["iso_code"],
+            country_name=row["country_name"],
+            latest_year=int(row["latest_year"]),
+            nuclear_generation_twh=_optional_float(row["nuclear_generation_twh"]),
+            nuclear_share_electricity_percent=_optional_float(row["nuclear_share_electricity_percent"]),
+            nuclear_capacity_gw=_optional_float(row["nuclear_capacity_gw"]),
+            electricity_generation_twh=_optional_float(row["electricity_generation_twh"]),
+            electricity_demand_twh=_optional_float(row["electricity_demand_twh"]),
+            net_electricity_imports_twh=_optional_float(row["net_electricity_imports_twh"]),
+            estimated_capacity_factor_percent=_capacity_factor_percent(
+                _optional_float(row["nuclear_generation_twh"]),
+                _optional_float(row["nuclear_capacity_gw"]),
+            ),
+        )
+        for row in rows
+    ]
+
+
+def fetch_energy_years(iso_code: str) -> list[EnergyYearRecord]:
+    iso_code = iso_code.strip().upper()
+    if not iso_code:
+        return []
+
+    statement = sql_text(
+        """
+        select
+          iso_code,
+          country_name,
+          year,
+          nuclear_generation_twh,
+          nuclear_share_electricity_percent,
+          nuclear_capacity_gw,
+          electricity_generation_twh,
+          electricity_demand_twh,
+          net_electricity_imports_twh,
+          fossil_generation_twh,
+          renewables_generation_twh,
+          clean_generation_twh
+        from public.country_energy_years
+        where iso_code = :iso_code
+        order by year
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"iso_code": iso_code}).mappings().all()
+
+    return [
+        EnergyYearRecord(
+            iso_code=row["iso_code"],
+            country_name=row["country_name"],
+            year=int(row["year"]),
+            nuclear_generation_twh=_optional_float(row["nuclear_generation_twh"]),
+            nuclear_share_electricity_percent=_optional_float(row["nuclear_share_electricity_percent"]),
+            nuclear_capacity_gw=_optional_float(row["nuclear_capacity_gw"]),
+            electricity_generation_twh=_optional_float(row["electricity_generation_twh"]),
+            electricity_demand_twh=_optional_float(row["electricity_demand_twh"]),
+            net_electricity_imports_twh=_optional_float(row["net_electricity_imports_twh"]),
+            fossil_generation_twh=_optional_float(row["fossil_generation_twh"]),
+            renewables_generation_twh=_optional_float(row["renewables_generation_twh"]),
+            clean_generation_twh=_optional_float(row["clean_generation_twh"]),
+            estimated_capacity_factor_percent=_capacity_factor_percent(
+                _optional_float(row["nuclear_generation_twh"]),
+                _optional_float(row["nuclear_capacity_gw"]),
+            ),
+        )
+        for row in rows
+    ]
+
+
 def fetch_chunks_needing_embeddings(limit: int = 25, model: str | None = None) -> list[StoredChunk]:
     if limit < 1:
         return []
@@ -699,6 +961,21 @@ def _where_clause(conditions: Sequence[str]) -> str:
     if not conditions:
         return ""
     return f"where {' and '.join(conditions)}"
+
+
+def _capacity_factor_percent(nuclear_generation_twh: float | None, nuclear_capacity_gw: float | None) -> float | None:
+    if nuclear_generation_twh is None or nuclear_capacity_gw is None or nuclear_capacity_gw <= 0:
+        return None
+    return nuclear_generation_twh * 1000 / (nuclear_capacity_gw * 8760) * 100
+
+
+def _optional_float(value) -> float | None:
+    if value is None:
+        return None
+    number = float(value)
+    if not isfinite(number):
+        return None
+    return number
 
 
 def _estimate_token_count(text: str) -> int:

@@ -1,6 +1,6 @@
 import httpx
 
-from nuclear_energy.cli import _describe_openai_error, _describe_source_http_error
+from nuclear_energy.cli import _describe_openai_error, _describe_source_http_error, build_parser
 
 
 def test_describe_openai_error_explains_exhausted_credits():
@@ -24,3 +24,11 @@ def test_describe_source_http_error_explains_rate_limit():
     assert _describe_source_http_error("Example", error) == (
         "Example rate limit reached. Wait a few minutes, then rerun this command."
     )
+
+
+def test_parser_accepts_energy_ingest_country_filters():
+    args = build_parser().parse_args(["ingest-energy", "--country", "ROU", "--country", "FRA", "--since-year", "2020"])
+
+    assert args.command == "ingest-energy"
+    assert args.country == ["ROU", "FRA"]
+    assert args.since_year == 2020

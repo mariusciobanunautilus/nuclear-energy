@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -31,3 +31,21 @@ class RawDocument(BaseModel):
     @property
     def url_text(self) -> str:
         return str(self.url)
+
+
+class CountryEnergyYear(BaseModel):
+    iso_code: str = Field(min_length=3, max_length=3)
+    country_name: str = Field(min_length=1)
+    year: int = Field(ge=1950, le=2100)
+    nuclear_generation_twh: Optional[float] = None
+    nuclear_share_electricity_percent: Optional[float] = None
+    nuclear_capacity_gw: Optional[float] = None
+    electricity_generation_twh: Optional[float] = None
+    electricity_demand_twh: Optional[float] = None
+    net_electricity_imports_twh: Optional[float] = None
+    fossil_generation_twh: Optional[float] = None
+    renewables_generation_twh: Optional[float] = None
+    clean_generation_twh: Optional[float] = None
+    source_name: str = "Ember Yearly Electricity Data"
+    source_url: str = "https://files.ember-energy.org/public-downloads/generation/outputs/release_generation_yearly_global.csv"
+    raw_payload: dict[str, Any] = Field(default_factory=dict)

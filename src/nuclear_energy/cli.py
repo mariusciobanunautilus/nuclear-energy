@@ -11,10 +11,11 @@ from openai import OpenAIError
 from nuclear_energy.config import get_settings
 from nuclear_energy.db import (
     fetch_chunks_needing_embeddings,
-    fetch_documents_without_chunks,
     fetch_documents_for_export,
+    fetch_documents_without_chunks,
     replace_document_chunks,
     semantic_search_chunks,
+    upsert_country_energy_years,
     update_chunk_embeddings,
     upsert_documents,
 )
@@ -33,6 +34,10 @@ from nuclear_energy.sources.federal_register import (
 )
 from nuclear_energy.sources.gdelt import DEFAULT_GDELT_QUERY, fetch_gdelt_documents
 from nuclear_energy.sources.eur_lex import DEFAULT_EUR_LEX_QUERY, fetch_eur_lex_documents
+from nuclear_energy.sources.ember_electricity import (
+    EMBER_YEARLY_ELECTRICITY_URL,
+    fetch_ember_yearly_electricity,
+)
 from nuclear_energy.sources.rss import fetch_rss_feeds
 
 
@@ -91,6 +96,23 @@ def _ingest_eur_lex(args: argparse.Namespace) -> int:
         return 1
     stored = upsert_documents(documents)
     print(f"Stored {stored} EUR-Lex document(s).")
+    return 0
+
+
+def _ingest_energy(args: argparse.Namespace) -> int:
+    try:
+        records = fetch_ember_yearly_electricity(
+            url=args.url,
+            since_year=args.since_year,
+            iso_codes=args.country,
+            timeout=args.timeout,
+        )
+    except httpx.HTTPError as exc:
+        print(_describe_source_http_error("Ember Yearly Electricity Data", exc))
+        return 1
+
+    stored = upsert_country_energy_years(records)
+    print(f"Stored {stored} country energy year(s) from Ember.")
     return 0
 
 
@@ -300,6 +322,16 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_eur_lex.add_argument("--limit", type=int, default=25, help="Maximum documents to store.")
     ingest_eur_lex.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout for the SPARQL request.")
     ingest_eur_lex.set_defaults(func=_ingest_eur_lex)
+
+    ingest_energy = subparsers.add_parser(
+        "ingest-energy",
+        help="Fetch public country electricity metrics from Ember and store annual nuclear energy rows.",
+    )
+    ingest_energy.add_argument("--url", default=EMBER_YEARLY_ELECTRICITY_URL, help="Ember yearly electricity CSV URL.")
+    ingest_energy.add_argument("--since-year", type=int, default=2000, help="Earliest year to store.")
+    ingest_energy.add_argument("--country", action="append", help="ISO-3 country code. May be repeated.")
+    ingest_energy.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout for the CSV request.")
+    ingest_energy.set_defaults(func=_ingest_energy)
 
     extract_documents = subparsers.add_parser(
         "extract-documents",

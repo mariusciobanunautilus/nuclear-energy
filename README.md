@@ -2,7 +2,7 @@
 
 Nuclear energy intelligence ingestion and analysis pipeline.
 
-The project currently has a Supabase/Postgres schema for nuclear reference data and a Python ingestion foundation for RSS-backed source documents.
+The project currently has a Supabase/Postgres schema for nuclear reference data, public document ingestion, and a Streamlit dashboard for tracking nuclear-energy intelligence and electricity-system metrics.
 
 ## Current Pieces
 
@@ -12,7 +12,8 @@ The project currently has a Supabase/Postgres schema for nuclear reference data 
 - Article extraction and chunking CLI that stores clean text in `document_chunks`.
 - OpenAI embedding CLI that stores chunk vectors in `pgvector`.
 - Semantic search CLI for finding relevant chunks by meaning.
-- Streamlit dashboard for database status, keyword search, and exports.
+- Public country electricity metrics from Ember, including nuclear generation, nuclear capacity, electricity demand, total generation, and net electricity imports/exports.
+- Streamlit dashboard for database status, energy-system metrics, keyword search, and exports.
 
 ## Setup
 
@@ -39,6 +40,12 @@ You can also ingest from public APIs that do not require API keys.
 nuclear-energy ingest-gdelt --limit 20
 nuclear-energy ingest-federal-register --limit 20
 nuclear-energy ingest-eur-lex --limit 20
+```
+
+Load public annual electricity-system data.
+
+```bash
+nuclear-energy ingest-energy --since-year 2000
 ```
 
 6. Extract and chunk stored articles.
