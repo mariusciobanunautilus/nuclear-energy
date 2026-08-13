@@ -32,3 +32,18 @@ def test_parser_accepts_energy_ingest_country_filters():
     assert args.command == "ingest-energy"
     assert args.country == ["ROU", "FRA"]
     assert args.since_year == 2020
+
+
+def test_parser_accepts_transaction_detection_options():
+    args = build_parser().parse_args(["detect-transactions", "--limit", "25", "--min-confidence", "0.6"])
+
+    assert args.command == "detect-transactions"
+    assert args.limit == 25
+    assert args.min_confidence == 0.6
+    assert args.replace_detected is True
+
+
+def test_parser_can_keep_existing_transaction_rows():
+    args = build_parser().parse_args(["detect-transactions", "--keep-existing"])
+
+    assert args.replace_detected is False

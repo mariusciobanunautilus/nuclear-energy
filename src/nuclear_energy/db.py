@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from nuclear_energy.config import get_settings
-from nuclear_energy.models import CountryEnergyYear, RawDocument
+from nuclear_energy.models import CountryEnergyYear, NuclearTransaction, RawDocument
 
 
 metadata = MetaData(schema="public")
@@ -160,6 +160,67 @@ class EnergyYearRecord:
     estimated_capacity_factor_percent: float | None
 
 
+@dataclass(frozen=True)
+class TransactionDetectionDocument:
+    id: str
+    title: str
+    url: str
+    source_name: str
+    source_kind: str
+    published_at: datetime | None
+    summary: str | None
+    content: str | None
+
+
+@dataclass(frozen=True)
+class TransactionMetrics:
+    transaction_count: int
+    country_count: int
+    with_amount_count: int
+    latest_transaction_date: datetime | None
+
+
+@dataclass(frozen=True)
+class TransactionCountrySummary:
+    country_iso_code: str
+    country_name: str
+    transaction_count: int
+    with_amount_count: int
+    latest_transaction_date: datetime | None
+
+
+@dataclass(frozen=True)
+class TransactionTypeSummary:
+    transaction_type: str
+    transaction_count: int
+    with_amount_count: int
+
+
+@dataclass(frozen=True)
+class TransactionYearSummary:
+    year: int
+    transaction_count: int
+    with_amount_count: int
+
+
+@dataclass(frozen=True)
+class TransactionListItem:
+    id: str
+    transaction_date: datetime | None
+    country_iso_code: str | None
+    country_name: str | None
+    plant_name: str | None
+    transaction_type: str
+    stage: str
+    title: str
+    summary: str
+    amount_text: str | None
+    currency: str | None
+    confidence: float
+    source_name: str
+    source_url: str
+
+
 ingested_documents = Table(
     "ingested_documents",
     metadata,
@@ -217,6 +278,35 @@ country_energy_years = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("iso_code", "year", name="country_energy_years_iso_year_unique"),
+)
+
+nuclear_transactions = Table(
+    "nuclear_transactions",
+    metadata,
+    Column("id", UUID(as_uuid=False), primary_key=True, server_default=sql_text("extensions.gen_random_uuid()")),
+    Column("external_id", Text, nullable=False),
+    Column("document_id", UUID(as_uuid=False), nullable=False),
+    Column("transaction_date", DateTime(timezone=True)),
+    Column("country_iso_code", Text),
+    Column("country_name", Text),
+    Column("plant_name", Text),
+    Column("project_name", Text),
+    Column("transaction_type", Text, nullable=False),
+    Column("stage", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("summary", Text, nullable=False),
+    Column("source_name", Text, nullable=False),
+    Column("source_url", Text, nullable=False),
+    Column("amount_text", Text),
+    Column("amount", Numeric(18, 2)),
+    Column("currency", Text),
+    Column("counterparties", JSON, nullable=False),
+    Column("matched_terms", JSON, nullable=False),
+    Column("confidence", Numeric(4, 3), nullable=False),
+    Column("raw_payload", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("external_id", name="nuclear_transactions_external_id_unique"),
 )
 
 
@@ -316,6 +406,79 @@ def upsert_country_energy_years(records: Iterable[CountryEnergyYear]) -> int:
         session.commit()
 
     return len(rows)
+
+
+def upsert_nuclear_transactions(transactions: Iterable[NuclearTransaction]) -> int:
+    rows = []
+    now = datetime.now(timezone.utc)
+    for transaction in transactions:
+        rows.append(
+            {
+                "external_id": transaction.external_id,
+                "document_id": transaction.document_id,
+                "transaction_date": transaction.transaction_date,
+                "country_iso_code": transaction.country_iso_code.upper() if transaction.country_iso_code else None,
+                "country_name": transaction.country_name,
+                "plant_name": transaction.plant_name,
+                "project_name": transaction.project_name,
+                "transaction_type": transaction.transaction_type,
+                "stage": transaction.stage,
+                "title": transaction.title,
+                "summary": transaction.summary,
+                "source_name": transaction.source_name,
+                "source_url": transaction.source_url,
+                "amount_text": transaction.amount_text,
+                "amount": transaction.amount,
+                "currency": transaction.currency,
+                "counterparties": transaction.counterparties,
+                "matched_terms": transaction.matched_terms,
+                "confidence": transaction.confidence,
+                "raw_payload": transaction.raw_payload,
+                "updated_at": now,
+            }
+        )
+
+    if not rows:
+        return 0
+
+    statement = insert(nuclear_transactions).values(rows)
+    update_columns = {
+        column: getattr(statement.excluded, column)
+        for column in rows[0]
+        if column != "external_id"
+    }
+
+    with Session(get_engine()) as session:
+        session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["external_id"],
+                set_=update_columns,
+            )
+        )
+        session.commit()
+
+    return len(rows)
+
+
+def delete_detected_nuclear_transactions(source_name: Optional[str] = None) -> int:
+    conditions = ["stage = 'detected'"]
+    params: dict[str, object] = {}
+    if source_name:
+        conditions.append("source_name = :source_name")
+        params["source_name"] = source_name
+
+    statement = sql_text(
+        f"""
+        delete from public.nuclear_transactions
+        {_where_clause(conditions)}
+        """
+    )
+
+    with Session(get_engine()) as session:
+        result = session.execute(statement, params)
+        session.commit()
+
+    return int(result.rowcount or 0)
 
 
 def fetch_documents_without_chunks(limit: int = 10, source_name: Optional[str] = None) -> list[StoredDocument]:
@@ -525,6 +688,56 @@ def fetch_recent_documents(
             preview=row["preview"] or "",
             chunk_count=int(row["chunk_count"]),
             embedded_chunk_count=int(row["embedded_chunk_count"]),
+        )
+        for row in rows
+    ]
+
+
+def fetch_documents_for_transaction_detection(
+    *,
+    limit: int = 500,
+    source_name: Optional[str] = None,
+) -> list[TransactionDetectionDocument]:
+    if limit < 1:
+        return []
+
+    conditions = []
+    params: dict[str, object] = {"limit": limit}
+    if source_name:
+        conditions.append("d.source_name = :source_name")
+        params["source_name"] = source_name
+
+    statement = sql_text(
+        f"""
+        select
+          d.id,
+          d.title,
+          d.url,
+          d.source_name,
+          d.source_kind::text as source_kind,
+          d.published_at,
+          d.summary,
+          d.content
+        from public.ingested_documents as d
+        {_where_clause(conditions)}
+        order by d.published_at desc nulls last, d.created_at desc
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        TransactionDetectionDocument(
+            id=str(row["id"]),
+            title=row["title"],
+            url=row["url"],
+            source_name=row["source_name"],
+            source_kind=row["source_kind"],
+            published_at=row["published_at"],
+            summary=row["summary"],
+            content=row["content"],
         )
         for row in rows
     ]
@@ -820,6 +1033,180 @@ def fetch_energy_years(iso_code: str) -> list[EnergyYearRecord]:
     ]
 
 
+def fetch_transaction_metrics(country_iso_code: Optional[str] = None) -> TransactionMetrics:
+    conditions, params = _transaction_conditions(country_iso_code)
+    statement = sql_text(
+        f"""
+        select
+          count(*) as transaction_count,
+          count(distinct country_iso_code) filter (where country_iso_code is not null) as country_count,
+          count(*) filter (where amount_text is not null) as with_amount_count,
+          max(transaction_date) as latest_transaction_date
+        from public.nuclear_transactions
+        {_where_clause(conditions)}
+        """
+    )
+
+    with Session(get_engine()) as session:
+        row = session.execute(statement, params).mappings().one()
+
+    return TransactionMetrics(
+        transaction_count=int(row["transaction_count"]),
+        country_count=int(row["country_count"]),
+        with_amount_count=int(row["with_amount_count"]),
+        latest_transaction_date=row["latest_transaction_date"],
+    )
+
+
+def fetch_transaction_country_summaries(limit: int = 100) -> list[TransactionCountrySummary]:
+    if limit < 1:
+        return []
+
+    statement = sql_text(
+        """
+        select
+          country_iso_code,
+          country_name,
+          count(*) as transaction_count,
+          count(*) filter (where amount_text is not null) as with_amount_count,
+          max(transaction_date) as latest_transaction_date
+        from public.nuclear_transactions
+        where country_iso_code is not null
+        group by country_iso_code, country_name
+        order by transaction_count desc, latest_transaction_date desc nulls last, country_name
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"limit": limit}).mappings().all()
+
+    return [
+        TransactionCountrySummary(
+            country_iso_code=row["country_iso_code"],
+            country_name=row["country_name"],
+            transaction_count=int(row["transaction_count"]),
+            with_amount_count=int(row["with_amount_count"]),
+            latest_transaction_date=row["latest_transaction_date"],
+        )
+        for row in rows
+    ]
+
+
+def fetch_transaction_type_summaries(country_iso_code: Optional[str] = None) -> list[TransactionTypeSummary]:
+    conditions, params = _transaction_conditions(country_iso_code)
+    statement = sql_text(
+        f"""
+        select
+          transaction_type,
+          count(*) as transaction_count,
+          count(*) filter (where amount_text is not null) as with_amount_count
+        from public.nuclear_transactions
+        {_where_clause(conditions)}
+        group by transaction_type
+        order by transaction_count desc, transaction_type
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        TransactionTypeSummary(
+            transaction_type=row["transaction_type"],
+            transaction_count=int(row["transaction_count"]),
+            with_amount_count=int(row["with_amount_count"]),
+        )
+        for row in rows
+    ]
+
+
+def fetch_transaction_year_summaries(country_iso_code: Optional[str] = None) -> list[TransactionYearSummary]:
+    conditions, params = _transaction_conditions(country_iso_code)
+    statement = sql_text(
+        f"""
+        select
+          extract(year from coalesce(transaction_date, created_at))::integer as year,
+          count(*) as transaction_count,
+          count(*) filter (where amount_text is not null) as with_amount_count
+        from public.nuclear_transactions
+        {_where_clause(conditions)}
+        group by year
+        order by year
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        TransactionYearSummary(
+            year=int(row["year"]),
+            transaction_count=int(row["transaction_count"]),
+            with_amount_count=int(row["with_amount_count"]),
+        )
+        for row in rows
+    ]
+
+
+def fetch_recent_transactions(
+    *,
+    limit: int = 50,
+    country_iso_code: Optional[str] = None,
+) -> list[TransactionListItem]:
+    if limit < 1:
+        return []
+
+    conditions, params = _transaction_conditions(country_iso_code)
+    params["limit"] = limit
+    statement = sql_text(
+        f"""
+        select
+          id,
+          transaction_date,
+          country_iso_code,
+          country_name,
+          plant_name,
+          transaction_type,
+          stage,
+          title,
+          summary,
+          amount_text,
+          currency,
+          confidence,
+          source_name,
+          source_url
+        from public.nuclear_transactions
+        {_where_clause(conditions)}
+        order by transaction_date desc nulls last, created_at desc
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        TransactionListItem(
+            id=str(row["id"]),
+            transaction_date=row["transaction_date"],
+            country_iso_code=row["country_iso_code"],
+            country_name=row["country_name"],
+            plant_name=row["plant_name"],
+            transaction_type=row["transaction_type"],
+            stage=row["stage"],
+            title=row["title"],
+            summary=row["summary"],
+            amount_text=row["amount_text"],
+            currency=row["currency"],
+            confidence=float(row["confidence"]),
+            source_name=row["source_name"],
+            source_url=row["source_url"],
+        )
+        for row in rows
+    ]
+
+
 def fetch_chunks_needing_embeddings(limit: int = 25, model: str | None = None) -> list[StoredChunk]:
     if limit < 1:
         return []
@@ -955,6 +1342,15 @@ def format_vector_literal(embedding: Sequence[float]) -> str:
         values.append(f"{number:.12g}")
 
     return f"[{','.join(values)}]"
+
+
+def _transaction_conditions(country_iso_code: Optional[str]) -> tuple[list[str], dict[str, object]]:
+    conditions = []
+    params: dict[str, object] = {}
+    if country_iso_code:
+        conditions.append("country_iso_code = :country_iso_code")
+        params["country_iso_code"] = country_iso_code.strip().upper()
+    return conditions, params
 
 
 def _where_clause(conditions: Sequence[str]) -> str:

@@ -13,7 +13,8 @@ The project currently has a Supabase/Postgres schema for nuclear reference data,
 - OpenAI embedding CLI that stores chunk vectors in `pgvector`.
 - Semantic search CLI for finding relevant chunks by meaning.
 - Public country electricity metrics from Ember, including nuclear generation, nuclear capacity, electricity demand, total generation, and net electricity imports/exports.
-- Streamlit dashboard for database status, energy-system metrics, keyword search, and exports.
+- Rule-based public transaction detection from stored documents, linked back to source articles and regulatory records.
+- Streamlit dashboard for database status, energy-system metrics, transaction signals, keyword search, and exports.
 
 ## Setup
 
@@ -52,6 +53,12 @@ nuclear-energy ingest-energy --since-year 2000
 
 ```bash
 nuclear-energy extract-documents --limit 20
+```
+
+Detect public transaction signals in stored documents.
+
+```bash
+nuclear-energy detect-transactions --limit 500
 ```
 
 7. Embed stored chunks and try semantic search.

@@ -10,12 +10,15 @@ from openai import OpenAIError
 
 from nuclear_energy.config import get_settings
 from nuclear_energy.db import (
+    delete_detected_nuclear_transactions,
     fetch_chunks_needing_embeddings,
+    fetch_documents_for_transaction_detection,
     fetch_documents_for_export,
     fetch_documents_without_chunks,
     replace_document_chunks,
     semantic_search_chunks,
     upsert_country_energy_years,
+    upsert_nuclear_transactions,
     update_chunk_embeddings,
     upsert_documents,
 )
@@ -28,6 +31,7 @@ from nuclear_energy.embeddings import (
 )
 from nuclear_energy.exports import documents_to_csv, documents_to_markdown
 from nuclear_energy.extraction.text import chunk_text, fetch_article_text
+from nuclear_energy.extraction.transactions import detect_nuclear_transactions
 from nuclear_energy.sources.federal_register import (
     DEFAULT_FEDERAL_REGISTER_QUERY,
     fetch_federal_register_documents,
@@ -150,6 +154,26 @@ def _extract_documents(args: argparse.Namespace) -> int:
 
     print(f"Extracted {extracted} document(s) into {total_chunks} chunk(s); {failed} failed/skipped.")
     return 0 if extracted or not failed else 1
+
+
+def _detect_transactions(args: argparse.Namespace) -> int:
+    documents = fetch_documents_for_transaction_detection(
+        limit=args.limit,
+        source_name=args.source_name,
+    )
+    transactions = detect_nuclear_transactions(
+        documents,
+        min_confidence=args.min_confidence,
+    )
+    removed = 0
+    if args.replace_detected:
+        removed = delete_detected_nuclear_transactions(source_name=args.source_name)
+    stored = upsert_nuclear_transactions(transactions)
+    print(
+        f"Detected {stored} transaction signal(s) from {len(documents)} document(s); "
+        f"removed {removed} previous detected signal(s)."
+    )
+    return 0
 
 
 def _embed_chunks(args: argparse.Namespace) -> int:
@@ -343,6 +367,27 @@ def build_parser() -> argparse.ArgumentParser:
     extract_documents.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout per article.")
     extract_documents.add_argument("--source-name", help="Only extract documents from this exact source name.")
     extract_documents.set_defaults(func=_extract_documents)
+
+    detect_transactions = subparsers.add_parser(
+        "detect-transactions",
+        help="Detect public nuclear transaction signals in stored documents.",
+    )
+    detect_transactions.add_argument("--limit", type=int, default=500, help="Maximum stored documents to scan.")
+    detect_transactions.add_argument("--source-name", help="Only scan documents from this exact source name.")
+    detect_transactions.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.45,
+        help="Minimum confidence score between 0 and 1.",
+    )
+    detect_transactions.add_argument(
+        "--keep-existing",
+        action="store_false",
+        dest="replace_detected",
+        help="Keep existing detected transaction rows instead of refreshing them.",
+    )
+    detect_transactions.set_defaults(replace_detected=True)
+    detect_transactions.set_defaults(func=_detect_transactions)
 
     embed_chunks = subparsers.add_parser(
         "embed-chunks",

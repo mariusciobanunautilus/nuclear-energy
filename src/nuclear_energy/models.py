@@ -49,3 +49,26 @@ class CountryEnergyYear(BaseModel):
     source_name: str = "Ember Yearly Electricity Data"
     source_url: str = "https://files.ember-energy.org/public-downloads/generation/outputs/release_generation_yearly_global.csv"
     raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class NuclearTransaction(BaseModel):
+    external_id: str = Field(min_length=1)
+    document_id: str = Field(min_length=1)
+    transaction_date: Optional[datetime] = None
+    country_iso_code: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    country_name: Optional[str] = None
+    plant_name: Optional[str] = None
+    project_name: Optional[str] = None
+    transaction_type: str = Field(min_length=1)
+    stage: str = "detected"
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    source_name: str = Field(min_length=1)
+    source_url: str = Field(min_length=1)
+    amount_text: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    counterparties: list[str] = Field(default_factory=list)
+    matched_terms: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+    raw_payload: dict[str, Any] = Field(default_factory=dict)

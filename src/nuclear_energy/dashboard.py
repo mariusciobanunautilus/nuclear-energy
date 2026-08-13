@@ -15,12 +15,18 @@ from nuclear_energy.db import (
     fetch_energy_years,
     fetch_recent_documents,
     fetch_source_summaries,
+    fetch_recent_transactions,
     search_documents_keyword,
+    fetch_transaction_country_summaries,
+    fetch_transaction_metrics,
+    fetch_transaction_type_summaries,
+    fetch_transaction_year_summaries,
 )
 from nuclear_energy.exports import documents_to_csv, documents_to_markdown
 
 
 ALL_SOURCES = "All sources"
+ALL_COUNTRIES = "All countries"
 
 
 def main() -> None:
@@ -33,16 +39,18 @@ def main() -> None:
 
     _render_metric_strip(metrics)
 
-    tabs = st.tabs(["Overview", "Energy System", "Documents", "Keyword Search", "Exports"])
+    tabs = st.tabs(["Overview", "Energy System", "Transactions", "Documents", "Keyword Search", "Exports"])
     with tabs[0]:
         _render_overview(source_summaries)
     with tabs[1]:
         _render_energy_system()
     with tabs[2]:
-        _render_documents(source_names)
+        _render_transactions()
     with tabs[3]:
-        _render_keyword_search(source_names)
+        _render_documents(source_names)
     with tabs[4]:
+        _render_keyword_search(source_names)
+    with tabs[5]:
         _render_exports(source_names)
 
 
@@ -186,6 +194,7 @@ def _render_energy_system() -> None:
     if year_frame.empty:
         st.info("No annual energy rows matched.")
         return
+    country_transactions = _load_or_stop(fetch_recent_transactions, limit=80, country_iso_code=selected_iso_code)
 
     latest = years[-1]
     country_columns = st.columns(5)
@@ -228,6 +237,7 @@ def _render_energy_system() -> None:
             color_discrete_sequence=px.colors.qualitative.Set2,
         )
         fig.update_layout(height=360, margin=dict(l=10, r=10, t=24, b=10))
+        _add_transaction_markers(fig, country_transactions, trend_frame)
         st.plotly_chart(fig, use_container_width=True)
 
     with flow_columns[1]:
@@ -324,6 +334,115 @@ def _render_energy_system() -> None:
         }
     )
     st.dataframe(display_years, use_container_width=True, hide_index=True)
+
+
+def _render_transactions() -> None:
+    country_summaries = _load_or_stop(fetch_transaction_country_summaries, limit=100)
+    country_options = [ALL_COUNTRIES] + [
+        f"{summary.country_name} ({summary.country_iso_code})"
+        for summary in country_summaries
+    ]
+    selected_country = st.selectbox("Country", country_options, key="transaction_country")
+    selected_iso_code = _selected_country_iso_code(selected_country)
+
+    metrics = _load_or_stop(fetch_transaction_metrics, selected_iso_code)
+    columns = st.columns(4)
+    columns[0].metric("Transaction Signals", f"{metrics.transaction_count:,}")
+    columns[1].metric("Countries", f"{metrics.country_count:,}")
+    columns[2].metric("With Amounts", f"{metrics.with_amount_count:,}")
+    columns[3].metric("Latest Signal", _format_datetime(metrics.latest_transaction_date))
+
+    if metrics.transaction_count == 0:
+        st.info("No transaction signals detected yet.")
+        return
+
+    type_summaries = _load_or_stop(fetch_transaction_type_summaries, selected_iso_code)
+    year_summaries = _load_or_stop(fetch_transaction_year_summaries, selected_iso_code)
+    recent_transactions = _load_or_stop(fetch_recent_transactions, limit=75, country_iso_code=selected_iso_code)
+
+    left, right = st.columns(2)
+    with left:
+        year_frame = _frame(year_summaries)
+        fig = px.bar(
+            year_frame,
+            x="year",
+            y="transaction_count",
+            color="with_amount_count",
+            labels={
+                "year": "Year",
+                "transaction_count": "Signals",
+                "with_amount_count": "With amount",
+            },
+            color_continuous_scale="Tealrose",
+        )
+        fig.update_layout(height=340, margin=dict(l=10, r=10, t=24, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with right:
+        type_frame = _frame(type_summaries)
+        type_frame["type_label"] = type_frame["transaction_type"].map(_transaction_type_label)
+        fig = px.bar(
+            type_frame,
+            x="transaction_count",
+            y="type_label",
+            orientation="h",
+            labels={"transaction_count": "Signals", "type_label": "Type"},
+            color="with_amount_count",
+            color_continuous_scale="Picnic",
+        )
+        fig.update_layout(height=340, margin=dict(l=10, r=10, t=24, b=10), yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig, use_container_width=True)
+
+    if selected_iso_code is None:
+        country_frame = _frame(country_summaries)
+        if not country_frame.empty:
+            fig = px.bar(
+                country_frame.head(20),
+                x="country_name",
+                y="transaction_count",
+                color="with_amount_count",
+                labels={
+                    "country_name": "Country",
+                    "transaction_count": "Signals",
+                    "with_amount_count": "With amount",
+                },
+                color_continuous_scale="Tealrose",
+            )
+            fig.update_layout(height=340, margin=dict(l=10, r=10, t=24, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+
+    transaction_frame = _frame(recent_transactions)
+    if not transaction_frame.empty:
+        transaction_frame["transaction_type"] = transaction_frame["transaction_type"].map(_transaction_type_label)
+        display_frame = transaction_frame[
+            [
+                "transaction_date",
+                "country_name",
+                "plant_name",
+                "transaction_type",
+                "amount_text",
+                "confidence",
+                "summary",
+                "source_name",
+                "source_url",
+            ]
+        ].rename(
+            columns={
+                "transaction_date": "date",
+                "country_name": "country",
+                "plant_name": "plant",
+                "transaction_type": "type",
+                "amount_text": "amount",
+                "source_name": "source",
+                "source_url": "url",
+            }
+        )
+        st.dataframe(
+            display_frame,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"url": st.column_config.LinkColumn("url")},
+        )
 
 
 def _render_documents(source_names: list[str]) -> None:
@@ -428,10 +547,46 @@ def _load_or_stop(func, *args, **kwargs):
 
 def _frame(items) -> pd.DataFrame:
     frame = pd.DataFrame([asdict(item) for item in items])
-    for column in ("published_at", "latest_published_at"):
+    for column in ("published_at", "latest_published_at", "transaction_date", "latest_transaction_date"):
         if column in frame.columns:
             frame[column] = frame[column].map(_format_datetime)
     return frame
+
+
+def _add_transaction_markers(fig, transactions, trend_frame: pd.DataFrame) -> None:
+    if not transactions or trend_frame.empty:
+        return
+
+    markers = []
+    for transaction in transactions:
+        if transaction.transaction_date is None:
+            continue
+        markers.append(
+            {
+                "year": transaction.transaction_date.year,
+                "label": (
+                    f"{_transaction_type_label(transaction.transaction_type)}<br>"
+                    f"{_format_datetime(transaction.transaction_date)}<br>"
+                    f"{transaction.amount_text or 'amount not public'}<br>"
+                    f"{transaction.title}"
+                ),
+            }
+        )
+    if not markers:
+        return
+
+    marker_frame = pd.DataFrame(markers)
+    max_value = trend_frame["value"].max()
+    marker_y = (float(max_value) if pd.notna(max_value) else 0) * 1.08
+    fig.add_scatter(
+        x=marker_frame["year"],
+        y=[marker_y] * len(marker_frame),
+        mode="markers",
+        name="Transaction signals",
+        marker={"color": "#f2c14e", "size": 11, "symbol": "diamond"},
+        text=marker_frame["label"],
+        hovertemplate="%{text}<extra></extra>",
+    )
 
 
 def _format_datetime(value: datetime | None) -> str:
@@ -476,6 +631,16 @@ def _format_trade_balance(value) -> str:
     if number < 0:
         return f"{abs(number):,.1f} TWh net exports"
     return "balanced"
+
+
+def _transaction_type_label(value: str) -> str:
+    return value.replace("_", " ").title()
+
+
+def _selected_country_iso_code(selected_country: str) -> str | None:
+    if selected_country == ALL_COUNTRIES:
+        return None
+    return selected_country.rsplit("(", 1)[-1].rstrip(")")
 
 
 def _source_value(source_name: str) -> str | None:

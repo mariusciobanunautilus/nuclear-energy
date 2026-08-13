@@ -40,3 +40,4 @@ jobs:
           nuclear-energy ingest-gdelt --limit 20 || echo "GDELT ingest skipped or rate-limited."
           nuclear-energy ingest-energy --since-year 2000
           nuclear-energy extract-documents --limit 30
+          nuclear-energy detect-transactions --limit 500
