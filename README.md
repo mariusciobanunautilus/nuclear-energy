@@ -66,6 +66,11 @@ nuclear-energy export-documents --format csv --output exports/documents.csv
 nuclear-energy export-documents --format markdown --output exports/documents.md
 ```
 
+## GitHub Actions
+
+- `CI` runs the test suite on pushes and pull requests.
+- `Public Source Ingest` can run manually or on its daily schedule. It skips itself unless the repository has a `DATABASE_URL` secret configured for a Postgres/Supabase database, using the same `postgresql+psycopg://...` format as local development.
+
 ## Tests
 
 ```bash
