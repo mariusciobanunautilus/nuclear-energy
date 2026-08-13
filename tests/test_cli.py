@@ -1,4 +1,6 @@
-from nuclear_energy.cli import _describe_openai_error
+import httpx
+
+from nuclear_energy.cli import _describe_openai_error, _describe_source_http_error
 
 
 def test_describe_openai_error_explains_exhausted_credits():
@@ -12,3 +14,13 @@ def test_describe_openai_error_explains_missing_key():
     message = _describe_openai_error(Exception("OPENAI_API_KEY is required"))
 
     assert message == "OPENAI_API_KEY is missing. Add it to .env.local, then rerun this command."
+
+
+def test_describe_source_http_error_explains_rate_limit():
+    request = httpx.Request("GET", "https://api.example.com")
+    response = httpx.Response(429, request=request)
+    error = httpx.HTTPStatusError("too many requests", request=request, response=response)
+
+    assert _describe_source_http_error("Example", error) == (
+        "Example rate limit reached. Wait a few minutes, then rerun this command."
+    )

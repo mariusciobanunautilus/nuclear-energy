@@ -33,6 +33,13 @@ python -m pip install -e ".[dev]"
 nuclear-energy ingest-rss --limit 20
 ```
 
+You can also ingest from public APIs that do not require API keys.
+
+```bash
+nuclear-energy ingest-gdelt --limit 20
+nuclear-energy ingest-federal-register --limit 20
+```
+
 6. Extract and chunk stored articles.
 
 ```bash

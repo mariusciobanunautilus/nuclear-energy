@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import httpx
 from openai import OpenAIError
 
 from nuclear_energy.config import get_settings
@@ -26,6 +27,11 @@ from nuclear_energy.embeddings import (
 )
 from nuclear_energy.exports import documents_to_csv, documents_to_markdown
 from nuclear_energy.extraction.text import chunk_text, fetch_article_text
+from nuclear_energy.sources.federal_register import (
+    DEFAULT_FEDERAL_REGISTER_QUERY,
+    fetch_federal_register_documents,
+)
+from nuclear_energy.sources.gdelt import DEFAULT_GDELT_QUERY, fetch_gdelt_documents
 from nuclear_energy.sources.rss import fetch_rss_feeds
 
 
@@ -38,6 +44,37 @@ def _ingest_rss(args: argparse.Namespace) -> int:
     documents = fetch_rss_feeds(feeds, limit_per_feed=args.limit)
     stored = upsert_documents(documents)
     print(f"Stored {stored} RSS documents from {len(feeds)} feed(s).")
+    return 0
+
+
+def _ingest_gdelt(args: argparse.Namespace) -> int:
+    try:
+        documents = fetch_gdelt_documents(
+            query=args.query,
+            limit=args.limit,
+            timespan=args.timespan,
+            timeout=args.timeout,
+        )
+    except httpx.HTTPError as exc:
+        print(_describe_source_http_error("GDELT", exc))
+        return 1
+    stored = upsert_documents(documents)
+    print(f"Stored {stored} GDELT document(s).")
+    return 0
+
+
+def _ingest_federal_register(args: argparse.Namespace) -> int:
+    try:
+        documents = fetch_federal_register_documents(
+            query=args.query,
+            limit=args.limit,
+            timeout=args.timeout,
+        )
+    except httpx.HTTPError as exc:
+        print(_describe_source_http_error("Federal Register", exc))
+        return 1
+    stored = upsert_documents(documents)
+    print(f"Stored {stored} Federal Register document(s).")
     return 0
 
 
@@ -191,6 +228,15 @@ def _describe_openai_error(exc: Exception) -> str:
     return f"OpenAI API request failed: {message}"
 
 
+def _describe_source_http_error(source_name: str, exc: httpx.HTTPError) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        if status_code == 429:
+            return f"{source_name} rate limit reached. Wait a few minutes, then rerun this command."
+        return f"{source_name} API request failed with HTTP {status_code}."
+    return f"{source_name} API request failed: {exc}"
+
+
 def _batched(items: list, size: int):
     if size < 1:
         raise SystemExit("--batch-size must be at least 1.")
@@ -206,6 +252,29 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_rss.add_argument("--feed", action="append", help="RSS feed URL. May be repeated.")
     ingest_rss.add_argument("--limit", type=int, default=25, help="Maximum entries per feed.")
     ingest_rss.set_defaults(func=_ingest_rss)
+
+    ingest_gdelt = subparsers.add_parser(
+        "ingest-gdelt",
+        help="Search the GDELT DOC API and store matching news documents.",
+    )
+    ingest_gdelt.add_argument("--query", default=DEFAULT_GDELT_QUERY, help="GDELT DOC search query.")
+    ingest_gdelt.add_argument("--limit", type=int, default=25, help="Maximum documents to store.")
+    ingest_gdelt.add_argument("--timespan", default="1week", help="GDELT timespan, such as 1day or 1week.")
+    ingest_gdelt.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout for the API request.")
+    ingest_gdelt.set_defaults(func=_ingest_gdelt)
+
+    ingest_federal_register = subparsers.add_parser(
+        "ingest-federal-register",
+        help="Search the Federal Register API and store matching documents.",
+    )
+    ingest_federal_register.add_argument(
+        "--query",
+        default=DEFAULT_FEDERAL_REGISTER_QUERY,
+        help="Federal Register search query.",
+    )
+    ingest_federal_register.add_argument("--limit", type=int, default=25, help="Maximum documents to store.")
+    ingest_federal_register.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout for the API request.")
+    ingest_federal_register.set_defaults(func=_ingest_federal_register)
 
     extract_documents = subparsers.add_parser(
         "extract-documents",
