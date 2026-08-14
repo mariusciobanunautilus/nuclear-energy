@@ -2071,7 +2071,16 @@ def fetch_energy_system_metrics() -> EnergySystemMetrics:
           from (
             select
               y.*,
-              row_number() over (partition by y.iso_code order by y.year desc) as rank
+              row_number() over (
+                partition by y.iso_code
+                order by
+                  (
+                    y.nuclear_generation_twh is not null
+                    or y.nuclear_capacity_gw is not null
+                    or y.nuclear_share_electricity_percent is not null
+                  ) desc,
+                  y.year desc
+              ) as rank
             from public.country_energy_years as y
           ) ranked
           where rank = 1
@@ -2113,7 +2122,16 @@ def fetch_energy_country_summaries(limit: int = 250) -> list[EnergyCountrySummar
           from (
             select
               y.*,
-              row_number() over (partition by y.iso_code order by y.year desc) as rank
+              row_number() over (
+                partition by y.iso_code
+                order by
+                  (
+                    y.nuclear_generation_twh is not null
+                    or y.nuclear_capacity_gw is not null
+                    or y.nuclear_share_electricity_percent is not null
+                  ) desc,
+                  y.year desc
+              ) as rank
             from public.country_energy_years as y
           ) ranked
           where rank = 1

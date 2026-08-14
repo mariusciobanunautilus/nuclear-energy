@@ -388,7 +388,11 @@ def _render_energy_system() -> None:
         st.plotly_chart(fig, use_container_width=True)
 
     with right:
-        capacity_frame = summary_frame.dropna(subset=["nuclear_capacity_gw"]).head(20)
+        capacity_frame = (
+            summary_frame.dropna(subset=["nuclear_capacity_gw"])
+            .sort_values(["nuclear_capacity_gw", "country_name"], ascending=[False, True])
+            .head(20)
+        )
         fig = px.bar(
             capacity_frame,
             x="nuclear_capacity_gw",
