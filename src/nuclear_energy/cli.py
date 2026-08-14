@@ -12,14 +12,17 @@ from openai import OpenAIError
 from nuclear_energy.config import get_settings
 from nuclear_energy.db import (
     delete_detected_nuclear_transactions,
+    fetch_completeness_report,
     fetch_chunks_needing_embeddings,
     fetch_document_id_map,
     fetch_documents_for_event_detection,
     fetch_documents_for_transaction_detection,
     fetch_documents_for_export,
     fetch_documents_without_chunks,
+    fetch_source_completeness,
     replace_document_chunks,
     record_ingestion_run,
+    repair_source_tiers,
     semantic_search_chunks,
     sync_event_relationships,
     sync_events_from_transactions,
@@ -130,10 +133,12 @@ def _ingest_energy(args: argparse.Namespace) -> int:
             timeout=args.timeout,
         )
     except httpx.HTTPError as exc:
+        _record_ingestion_failure(SourceKind.eia, "Ember Yearly Electricity Data", exc)
         print(_describe_source_http_error("Ember Yearly Electricity Data", exc))
         return 1
 
     stored = upsert_country_energy_years(records)
+    _record_ingestion_success(SourceKind.eia, "Ember Yearly Electricity Data", len(records), stored)
     print(f"Stored {stored} country energy year(s) from Ember.")
     return 0
 
@@ -271,6 +276,17 @@ def _sync_relationships(args: argparse.Namespace) -> int:
     return 0
 
 
+def _repair_source_tiers(args: argparse.Namespace) -> int:
+    counts = repair_source_tiers()
+    print(
+        "Repaired source tiers: "
+        f"{counts['documents_updated']} document(s), "
+        f"{counts['events_updated']} event(s), "
+        f"{counts['evidence_updated']} evidence row(s)."
+    )
+    return 0
+
+
 def _store_official_transaction_records(records: list[OfficialTransactionRecord]) -> tuple[int, int]:
     if not records:
         return 0, 0
@@ -365,6 +381,51 @@ def _export_documents(args: argparse.Namespace) -> int:
     return 0
 
 
+def _completeness_report(args: argparse.Namespace) -> int:
+    report = fetch_completeness_report()
+    sources = fetch_source_completeness()
+    print("Completeness report")
+    print("===================")
+    print(f"Documents: {report.document_count}")
+    print(f"Documents missing content: {report.documents_missing_content}")
+    print(f"Documents without chunks: {report.documents_without_chunks}")
+    print(f"Chunks: {report.chunk_count}")
+    print(f"Chunks without embeddings: {report.chunks_without_embeddings}")
+    print(f"Unclassified documents: {report.unclassified_documents}")
+    print(f"Sources: {report.source_count}")
+    print(f"Sources with run history: {report.sources_with_run_history}")
+    print(f"Latest published document: {_format_optional_datetime(report.latest_published_at)}")
+    print(f"Latest seen document: {_format_optional_datetime(report.latest_seen_at)}")
+    print(f"Transactions: {report.transaction_count}")
+    print(f"Official transactions: {report.official_transaction_count}")
+    print(f"Events: {report.event_count}")
+    print(f"Unreviewed events: {report.unreviewed_event_count}")
+    print(f"Low-confidence events: {report.low_confidence_event_count}")
+    print(f"Review history rows: {report.review_history_count}")
+    print(
+        "Energy years: "
+        f"{report.energy_year_count} row(s), "
+        f"{report.energy_country_count} country/countries, "
+        f"{report.energy_earliest_year or 'n/a'}-{report.energy_latest_year or 'n/a'}"
+    )
+    print(f"Energy missing country-years: {report.energy_missing_country_year_count}")
+    if sources:
+        print("")
+        print("Sources")
+        print("-------")
+        for source in sources:
+            print(
+                f"{source.source_name} ({source.source_kind}, {source.source_tier}): "
+                f"{source.document_count} docs, "
+                f"{source.documents_missing_content} missing content, "
+                f"{source.documents_without_chunks} without chunks, "
+                f"{source.chunks_without_embeddings}/{source.chunk_count} chunks unembedded, "
+                f"latest run {source.latest_run_status or 'n/a'} at "
+                f"{_format_optional_datetime(source.latest_run_at)}"
+            )
+    return 0
+
+
 def _dashboard(args: argparse.Namespace) -> int:
     dashboard_path = Path(__file__).with_name("dashboard.py")
     command = [
@@ -437,6 +498,10 @@ def _describe_source_http_error(source_name: str, exc: httpx.HTTPError) -> str:
             return f"{source_name} rate limit reached. Wait a few minutes, then rerun this command."
         return f"{source_name} API request failed with HTTP {status_code}."
     return f"{source_name} API request failed: {exc}"
+
+
+def _format_optional_datetime(value: datetime | None) -> str:
+    return value.isoformat() if value else "n/a"
 
 
 def _date_arg(value: str) -> date:
@@ -598,6 +663,12 @@ def build_parser() -> argparse.ArgumentParser:
     sync_relationships.add_argument("--limit", type=int, help="Maximum event rows to refresh.")
     sync_relationships.set_defaults(func=_sync_relationships)
 
+    repair_tiers = subparsers.add_parser(
+        "repair-source-tiers",
+        help="Backfill source trust tiers on existing documents, events, and evidence.",
+    )
+    repair_tiers.set_defaults(func=_repair_source_tiers)
+
     embed_chunks = subparsers.add_parser(
         "embed-chunks",
         help="Create OpenAI embeddings for stored document chunks.",
@@ -643,6 +714,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum content characters per exported document.",
     )
     export_documents.set_defaults(func=_export_documents)
+
+    completeness = subparsers.add_parser(
+        "completeness-report",
+        help="Print processing and source-coverage gaps for the data flood.",
+    )
+    completeness.set_defaults(func=_completeness_report)
 
     dashboard = subparsers.add_parser("dashboard", help="Open the Streamlit dashboard.")
     dashboard.add_argument("--address", default="127.0.0.1", help="Dashboard host address.")

@@ -1,6 +1,7 @@
 import httpx
 
-from nuclear_energy.cli import _describe_openai_error, _describe_source_http_error, build_parser
+from nuclear_energy.cli import _describe_openai_error, _describe_source_http_error, _ingest_energy, build_parser
+from nuclear_energy.models import SourceKind
 
 
 def test_describe_openai_error_explains_exhausted_credits():
@@ -99,3 +100,28 @@ def test_parser_accepts_eu_ted_ingest_options():
     assert args.command == "ingest-eu-ted"
     assert args.limit == 15
     assert args.term == ["uranium"]
+
+
+def test_parser_accepts_stage_one_operator_commands():
+    repair_args = build_parser().parse_args(["repair-source-tiers"])
+    report_args = build_parser().parse_args(["completeness-report"])
+
+    assert repair_args.command == "repair-source-tiers"
+    assert report_args.command == "completeness-report"
+
+
+def test_energy_ingest_records_success(monkeypatch):
+    records = [object(), object()]
+    calls = []
+
+    monkeypatch.setattr("nuclear_energy.cli.fetch_ember_yearly_electricity", lambda **kwargs: records)
+    monkeypatch.setattr("nuclear_energy.cli.upsert_country_energy_years", lambda rows: len(rows))
+    monkeypatch.setattr(
+        "nuclear_energy.cli._record_ingestion_success",
+        lambda *args: calls.append(args),
+    )
+
+    args = build_parser().parse_args(["ingest-energy", "--since-year", "2020"])
+
+    assert _ingest_energy(args) == 0
+    assert calls == [(SourceKind.eia, "Ember Yearly Electricity Data", 2, 2)]

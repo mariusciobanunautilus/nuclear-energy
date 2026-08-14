@@ -88,6 +88,18 @@ Refresh entity and project links for normalized events.
 nuclear-energy sync-relationships
 ```
 
+Check whether the ingestion flood is measurable and where processing is backed up.
+
+```bash
+nuclear-energy completeness-report
+```
+
+Repair source trust tiers on existing documents, events, and evidence after migrations or older ingests.
+
+```bash
+nuclear-energy repair-source-tiers
+```
+
 The dashboard Review Queue turns normalized events into a trader-maintained source of truth. It ranks items by review urgency, shows source evidence, records confirmations, promotes important events into the Daily Tape, marks noise, links duplicates, and stores correction history instead of silently overwriting facts.
 
 Trader watchlists have built-in defaults and can be overridden with comma-separated environment values.

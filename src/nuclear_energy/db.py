@@ -334,6 +334,47 @@ class ReviewMetrics:
 
 
 @dataclass(frozen=True)
+class CompletenessReport:
+    document_count: int
+    documents_missing_content: int
+    documents_without_chunks: int
+    chunk_count: int
+    chunks_without_embeddings: int
+    unclassified_documents: int
+    source_count: int
+    sources_with_run_history: int
+    latest_published_at: datetime | None
+    latest_seen_at: datetime | None
+    transaction_count: int
+    official_transaction_count: int
+    event_count: int
+    unreviewed_event_count: int
+    low_confidence_event_count: int
+    review_history_count: int
+    energy_country_count: int
+    energy_year_count: int
+    energy_earliest_year: int | None
+    energy_latest_year: int | None
+    energy_missing_country_year_count: int
+
+
+@dataclass(frozen=True)
+class SourceCompletenessItem:
+    source_name: str
+    source_kind: str
+    source_tier: str
+    document_count: int
+    documents_missing_content: int
+    documents_without_chunks: int
+    chunk_count: int
+    chunks_without_embeddings: int
+    latest_published_at: datetime | None
+    latest_seen_at: datetime | None
+    latest_run_at: datetime | None
+    latest_run_status: str | None
+
+
+@dataclass(frozen=True)
 class EventEvidenceItem:
     id: str
     event_id: str
@@ -548,6 +589,138 @@ def source_tier_for_kind(source_kind: str | SourceKind) -> str:
 
 def source_tier_label(source_tier: str | None) -> str:
     return SOURCE_TIER_LABELS.get(source_tier or "unclassified", SOURCE_TIER_LABELS["unclassified"])
+
+
+def repair_source_tiers() -> dict[str, int]:
+    statement = sql_text(
+        """
+        with updated_documents as (
+          update public.ingested_documents
+          set
+            source_tier = case
+              when source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
+              when source_kind::text in (
+                'eur_lex',
+                'federal_register',
+                'congress',
+                'regulations_gov',
+                'iaea_pris',
+                'eia',
+                'entsoe'
+              ) then 'tier_2_official_document'
+              when source_kind::text = 'rss' then 'tier_4_reported_media'
+              when source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
+              else 'unclassified'
+            end,
+            updated_at = now()
+          where source_tier is distinct from case
+              when source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
+              when source_kind::text in (
+                'eur_lex',
+                'federal_register',
+                'congress',
+                'regulations_gov',
+                'iaea_pris',
+                'eia',
+                'entsoe'
+              ) then 'tier_2_official_document'
+              when source_kind::text = 'rss' then 'tier_4_reported_media'
+              when source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
+              else 'unclassified'
+            end
+          returning id
+        ),
+        updated_events as (
+          update public.nuclear_events as e
+          set
+            source_tier = case
+              when d.source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
+              when d.source_kind::text in (
+                'eur_lex',
+                'federal_register',
+                'congress',
+                'regulations_gov',
+                'iaea_pris',
+                'eia',
+                'entsoe'
+              ) then 'tier_2_official_document'
+              when d.source_kind::text = 'rss' then 'tier_4_reported_media'
+              when d.source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
+              else 'unclassified'
+            end,
+            updated_at = now()
+          from public.ingested_documents as d
+          where e.source_document_id = d.id
+            and e.source_tier is distinct from case
+              when d.source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
+              when d.source_kind::text in (
+                'eur_lex',
+                'federal_register',
+                'congress',
+                'regulations_gov',
+                'iaea_pris',
+                'eia',
+                'entsoe'
+              ) then 'tier_2_official_document'
+              when d.source_kind::text = 'rss' then 'tier_4_reported_media'
+              when d.source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
+              else 'unclassified'
+            end
+          returning e.id
+        ),
+        updated_evidence as (
+          update public.event_evidence as ev
+          set
+            source_tier = case
+              when d.source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
+              when d.source_kind::text in (
+                'eur_lex',
+                'federal_register',
+                'congress',
+                'regulations_gov',
+                'iaea_pris',
+                'eia',
+                'entsoe'
+              ) then 'tier_2_official_document'
+              when d.source_kind::text = 'rss' then 'tier_4_reported_media'
+              when d.source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
+              else 'unclassified'
+            end
+          from public.ingested_documents as d
+          where ev.document_id = d.id
+            and ev.source_tier is distinct from case
+              when d.source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
+              when d.source_kind::text in (
+                'eur_lex',
+                'federal_register',
+                'congress',
+                'regulations_gov',
+                'iaea_pris',
+                'eia',
+                'entsoe'
+              ) then 'tier_2_official_document'
+              when d.source_kind::text = 'rss' then 'tier_4_reported_media'
+              when d.source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
+              else 'unclassified'
+            end
+          returning ev.id
+        )
+        select
+          (select count(*) from updated_documents) as documents_updated,
+          (select count(*) from updated_events) as events_updated,
+          (select count(*) from updated_evidence) as evidence_updated
+        """
+    )
+
+    with Session(get_engine()) as session:
+        row = session.execute(statement).mappings().one()
+        session.commit()
+
+    return {
+        "documents_updated": int(row["documents_updated"]),
+        "events_updated": int(row["events_updated"]),
+        "evidence_updated": int(row["evidence_updated"]),
+    }
 
 
 def record_ingestion_run(
@@ -1658,6 +1831,188 @@ def fetch_dashboard_metrics() -> DashboardMetrics:
         source_count=int(row["source_count"]),
         latest_published_at=row["latest_published_at"],
     )
+
+
+def fetch_completeness_report() -> CompletenessReport:
+    statement = sql_text(
+        """
+        with document_gaps as (
+          select
+            d.id,
+            d.source_name,
+            d.source_kind,
+            d.source_tier,
+            d.published_at,
+            d.last_seen_at,
+            nullif(d.content, '') is null as missing_content,
+            not exists (
+              select 1
+              from public.document_chunks c
+              where c.document_id = d.id
+            ) as missing_chunks
+          from public.ingested_documents as d
+        ),
+        energy_bounds as (
+          select
+            count(distinct iso_code) as country_count,
+            count(*) as year_count,
+            min(year) as earliest_year,
+            max(year) as latest_year
+          from public.country_energy_years
+        ),
+        expected_energy_years as (
+          select countries.iso_code, years.year
+          from (select distinct iso_code from public.country_energy_years) countries
+          cross join lateral generate_series(
+            (select earliest_year from energy_bounds),
+            (select latest_year from energy_bounds)
+          ) as years(year)
+          where (select earliest_year from energy_bounds) is not null
+            and (select latest_year from energy_bounds) is not null
+        )
+        select
+          (select count(*) from document_gaps) as document_count,
+          (select count(*) from document_gaps where missing_content) as documents_missing_content,
+          (select count(*) from document_gaps where missing_chunks) as documents_without_chunks,
+          (select count(*) from public.document_chunks) as chunk_count,
+          (select count(*) from public.document_chunks where embedding is null) as chunks_without_embeddings,
+          (select count(*) from document_gaps where source_tier = 'unclassified') as unclassified_documents,
+          (select count(distinct source_name) from document_gaps) as source_count,
+          (
+            select count(distinct source_name)
+            from public.ingestion_runs
+            where status in ('succeeded', 'failed')
+          ) as sources_with_run_history,
+          (select max(published_at) from document_gaps) as latest_published_at,
+          (select max(last_seen_at) from document_gaps) as latest_seen_at,
+          (select count(*) from public.nuclear_transactions) as transaction_count,
+          (
+            select count(*)
+            from public.nuclear_transactions
+            where source_name in ('USAspending.gov', 'EU TED')
+          ) as official_transaction_count,
+          (select count(*) from public.nuclear_events) as event_count,
+          (select count(*) from public.nuclear_events where review_status = 'unreviewed') as unreviewed_event_count,
+          (select count(*) from public.nuclear_events where source_confidence < 0.7) as low_confidence_event_count,
+          (select count(*) from public.event_reviews) as review_history_count,
+          coalesce((select country_count from energy_bounds), 0) as energy_country_count,
+          coalesce((select year_count from energy_bounds), 0) as energy_year_count,
+          (select earliest_year from energy_bounds) as energy_earliest_year,
+          (select latest_year from energy_bounds) as energy_latest_year,
+          coalesce((
+            select count(*)
+            from expected_energy_years expected
+            left join public.country_energy_years actual
+              on actual.iso_code = expected.iso_code
+              and actual.year = expected.year
+            where actual.id is null
+          ), 0) as energy_missing_country_year_count
+        """
+    )
+
+    with Session(get_engine()) as session:
+        row = session.execute(statement).mappings().one()
+
+    return CompletenessReport(
+        document_count=int(row["document_count"]),
+        documents_missing_content=int(row["documents_missing_content"]),
+        documents_without_chunks=int(row["documents_without_chunks"]),
+        chunk_count=int(row["chunk_count"]),
+        chunks_without_embeddings=int(row["chunks_without_embeddings"]),
+        unclassified_documents=int(row["unclassified_documents"]),
+        source_count=int(row["source_count"]),
+        sources_with_run_history=int(row["sources_with_run_history"]),
+        latest_published_at=row["latest_published_at"],
+        latest_seen_at=row["latest_seen_at"],
+        transaction_count=int(row["transaction_count"]),
+        official_transaction_count=int(row["official_transaction_count"]),
+        event_count=int(row["event_count"]),
+        unreviewed_event_count=int(row["unreviewed_event_count"]),
+        low_confidence_event_count=int(row["low_confidence_event_count"]),
+        review_history_count=int(row["review_history_count"]),
+        energy_country_count=int(row["energy_country_count"]),
+        energy_year_count=int(row["energy_year_count"]),
+        energy_earliest_year=row["energy_earliest_year"],
+        energy_latest_year=row["energy_latest_year"],
+        energy_missing_country_year_count=int(row["energy_missing_country_year_count"]),
+    )
+
+
+def fetch_source_completeness() -> list[SourceCompletenessItem]:
+    statement = sql_text(
+        """
+        with chunk_counts as (
+          select
+            document_id,
+            count(*) as chunk_count,
+            count(*) filter (where embedding is null) as chunks_without_embeddings
+          from public.document_chunks
+          group by document_id
+        ),
+        latest_runs as (
+          select *
+          from (
+            select
+              r.source_kind::text as source_kind,
+              r.source_name,
+              r.finished_at,
+              r.status,
+              row_number() over (
+                partition by r.source_kind, coalesce(r.source_name, '')
+                order by r.finished_at desc nulls last, r.started_at desc
+              ) as rank
+            from public.ingestion_runs as r
+          ) ranked
+          where rank = 1
+        )
+        select
+          d.source_name,
+          d.source_kind::text as source_kind,
+          coalesce(max(d.source_tier), 'unclassified') as source_tier,
+          count(*) as document_count,
+          count(*) filter (where nullif(d.content, '') is null) as documents_missing_content,
+          count(*) filter (where coalesce(chunk_counts.chunk_count, 0) = 0) as documents_without_chunks,
+          coalesce(sum(chunk_counts.chunk_count), 0) as chunk_count,
+          coalesce(sum(chunk_counts.chunks_without_embeddings), 0) as chunks_without_embeddings,
+          max(d.published_at) as latest_published_at,
+          max(d.last_seen_at) as latest_seen_at,
+          latest_runs.finished_at as latest_run_at,
+          latest_runs.status as latest_run_status
+        from public.ingested_documents as d
+        left join chunk_counts
+          on chunk_counts.document_id = d.id
+        left join latest_runs
+          on latest_runs.source_kind = d.source_kind::text
+          and coalesce(latest_runs.source_name, '') = coalesce(d.source_name, '')
+        group by
+          d.source_name,
+          d.source_kind,
+          latest_runs.finished_at,
+          latest_runs.status
+        order by document_count desc, d.source_name
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement).mappings().all()
+
+    return [
+        SourceCompletenessItem(
+            source_name=row["source_name"],
+            source_kind=row["source_kind"],
+            source_tier=row["source_tier"],
+            document_count=int(row["document_count"]),
+            documents_missing_content=int(row["documents_missing_content"]),
+            documents_without_chunks=int(row["documents_without_chunks"]),
+            chunk_count=int(row["chunk_count"]),
+            chunks_without_embeddings=int(row["chunks_without_embeddings"]),
+            latest_published_at=row["latest_published_at"],
+            latest_seen_at=row["latest_seen_at"],
+            latest_run_at=row["latest_run_at"],
+            latest_run_status=row["latest_run_status"],
+        )
+        for row in rows
+    ]
 
 
 def fetch_source_summaries() -> list[SourceSummary]:
