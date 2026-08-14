@@ -419,13 +419,43 @@ def _render_energy_system() -> None:
         return
     country_transactions = _load_or_stop(fetch_recent_transactions, limit=80, country_iso_code=selected_iso_code)
 
-    latest = years[-1]
+    latest = _latest_energy_record(years)
     country_columns = st.columns(5)
     country_columns[0].metric("Latest Year", _format_year(latest.year))
     country_columns[1].metric("Nuclear Generation", _format_twh(latest.nuclear_generation_twh))
     country_columns[2].metric("Nuclear Share", _format_percent(latest.nuclear_share_electricity_percent))
     country_columns[3].metric("Nuclear Capacity", _format_gw(latest.nuclear_capacity_gw))
     country_columns[4].metric("Usage", _format_percent(latest.estimated_capacity_factor_percent))
+
+    st.markdown("#### Period Comparison")
+    comparison_mode = st.selectbox(
+        "Compare",
+        ["Latest vs previous year", "Latest vs 5 years ago", "Latest vs 10 years ago", "Custom years"],
+        key="energy_period_comparison",
+    )
+    base_record, compare_record = _select_energy_comparison_records(years, latest, comparison_mode)
+    if comparison_mode == "Custom years":
+        year_options = [record.year for record in years]
+        custom_columns = st.columns(2)
+        base_year = custom_columns[0].selectbox(
+            "Base year",
+            year_options,
+            index=year_options.index(base_record.year),
+            key="energy_base_year",
+        )
+        compare_year = custom_columns[1].selectbox(
+            "Compare year",
+            year_options,
+            index=year_options.index(compare_record.year),
+            key="energy_compare_year",
+        )
+        records_by_year = {record.year: record for record in years}
+        base_record = records_by_year[base_year]
+        compare_record = records_by_year[compare_year]
+
+    comparison = _energy_period_comparison_frame(base_record, compare_record)
+    st.caption(_energy_comparison_readout(base_record, compare_record))
+    st.dataframe(comparison, use_container_width=True, hide_index=True)
 
     flow_columns = st.columns([3, 2])
     with flow_columns[0]:
@@ -1250,6 +1280,133 @@ def _add_transaction_markers(fig, transactions, trend_frame: pd.DataFrame) -> No
         text=marker_frame["label"],
         hovertemplate="%{text}<extra></extra>",
     )
+
+
+def _latest_energy_record(records):
+    for record in reversed(records):
+        if _has_nuclear_energy_data(record):
+            return record
+    return records[-1]
+
+
+def _has_nuclear_energy_data(record) -> bool:
+    return any(
+        getattr(record, field, None) is not None
+        for field in (
+            "nuclear_generation_twh",
+            "nuclear_capacity_gw",
+            "nuclear_share_electricity_percent",
+        )
+    )
+
+
+def _select_energy_comparison_records(records, latest, mode: str):
+    if len(records) < 2:
+        return latest, latest
+
+    years = sorted(record.year for record in records)
+    records_by_year = {record.year: record for record in records}
+    offsets = {
+        "Latest vs previous year": 1,
+        "Latest vs 5 years ago": 5,
+        "Latest vs 10 years ago": 10,
+    }
+    offset = offsets.get(mode, 5)
+    target_year = latest.year - offset
+    candidate_years = [year for year in years if year <= target_year]
+    if not candidate_years:
+        candidate_years = [year for year in years if year < latest.year]
+    base_year = max(candidate_years) if candidate_years else latest.year
+    return records_by_year[base_year], latest
+
+
+def _energy_period_comparison_frame(base_record, compare_record) -> pd.DataFrame:
+    rows = []
+    metrics = [
+        ("Nuclear generation", "nuclear_generation_twh", "TWh", "quantity"),
+        ("Nuclear capacity", "nuclear_capacity_gw", "GW", "quantity"),
+        ("Nuclear share", "nuclear_share_electricity_percent", "%", "percentage_point"),
+        ("Electricity demand", "electricity_demand_twh", "TWh", "quantity"),
+        ("Total generation", "electricity_generation_twh", "TWh", "quantity"),
+        ("Net electricity imports", "net_electricity_imports_twh", "TWh", "signed_quantity"),
+        ("Fossil generation", "fossil_generation_twh", "TWh", "quantity"),
+        ("Renewables generation", "renewables_generation_twh", "TWh", "quantity"),
+        ("Clean generation", "clean_generation_twh", "TWh", "quantity"),
+        ("Usage", "estimated_capacity_factor_percent", "%", "percentage_point"),
+    ]
+    for label, field, unit, change_kind in metrics:
+        base_value = getattr(base_record, field, None)
+        compare_value = getattr(compare_record, field, None)
+        change = _numeric_change(base_value, compare_value)
+        rows.append(
+            {
+                "metric": label,
+                f"{base_record.year}": _format_comparison_value(base_value, unit, field),
+                f"{compare_record.year}": _format_comparison_value(compare_value, unit, field),
+                "change": _format_comparison_change(change, unit, change_kind),
+                "change_pct": _format_comparison_pct_change(base_value, compare_value, change_kind),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _energy_comparison_readout(base_record, compare_record) -> str:
+    country = getattr(compare_record, "country_name", "Selected country")
+    parts = []
+    for label, field, unit, change_kind in (
+        ("nuclear generation", "nuclear_generation_twh", "TWh", "quantity"),
+        ("nuclear capacity", "nuclear_capacity_gw", "GW", "quantity"),
+        ("nuclear share", "nuclear_share_electricity_percent", "pp", "percentage_point"),
+        ("electricity demand", "electricity_demand_twh", "TWh", "quantity"),
+        ("net imports", "net_electricity_imports_twh", "TWh", "signed_quantity"),
+    ):
+        change = _numeric_change(getattr(base_record, field, None), getattr(compare_record, field, None))
+        if change is None:
+            continue
+        if change == 0:
+            parts.append(f"{label} was unchanged")
+            continue
+        direction = "increased" if change > 0 else "decreased"
+        magnitude = abs(change)
+        if unit == "pp":
+            formatted = f"{magnitude:,.1f} percentage points"
+        else:
+            formatted = _format_quantity(magnitude, unit)
+        parts.append(f"{label} {direction} by {formatted}")
+    if not parts:
+        return f"{country}: no comparable values between {base_record.year} and {compare_record.year}."
+    return f"{country}, {base_record.year} to {compare_record.year}: " + "; ".join(parts[:5]) + "."
+
+
+def _numeric_change(base_value, compare_value) -> float | None:
+    if base_value is None or compare_value is None or pd.isna(base_value) or pd.isna(compare_value):
+        return None
+    return float(compare_value) - float(base_value)
+
+
+def _format_comparison_value(value, unit: str, field: str) -> str:
+    if field == "net_electricity_imports_twh":
+        return _format_trade_balance(value)
+    return _format_quantity(value, unit)
+
+
+def _format_comparison_change(change: float | None, unit: str, change_kind: str) -> str:
+    if change is None:
+        return "n/a"
+    if change_kind == "percentage_point":
+        return f"{change:+,.1f} pp"
+    return f"{change:+,.1f} {unit}"
+
+
+def _format_comparison_pct_change(base_value, compare_value, change_kind: str) -> str:
+    if change_kind in {"percentage_point", "signed_quantity"}:
+        return "n/a"
+    if base_value is None or compare_value is None or pd.isna(base_value) or pd.isna(compare_value):
+        return "n/a"
+    base = float(base_value)
+    if base == 0:
+        return "n/a"
+    return f"{(float(compare_value) - base) / abs(base) * 100:+,.1f}%"
 
 
 def _format_datetime(value: datetime | None) -> str:

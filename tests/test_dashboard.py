@@ -19,6 +19,9 @@ from nuclear_energy.dashboard import (
     _has_positive_amount_counts,
     _join_labels,
     _join_review_reasons,
+    _energy_comparison_readout,
+    _energy_period_comparison_frame,
+    _latest_energy_record,
     _missing_workflow_secret_names,
     _overview_readout,
     _review_action_label,
@@ -49,6 +52,61 @@ def test_format_trade_balance_labels_net_imports_and_exports() -> None:
     assert _format_trade_balance(2.5) == "2.5 TWh net imports"
     assert _format_trade_balance(-3.25) == "3.2 TWh net exports"
     assert _format_trade_balance(0) == "balanced"
+
+
+def test_latest_energy_record_prefers_latest_nuclear_populated_year() -> None:
+    records = [
+        SimpleNamespace(year=2022, nuclear_generation_twh=10, nuclear_capacity_gw=1.4, nuclear_share_electricity_percent=20),
+        SimpleNamespace(year=2023, nuclear_generation_twh=None, nuclear_capacity_gw=None, nuclear_share_electricity_percent=None),
+    ]
+
+    assert _latest_energy_record(records).year == 2022
+
+
+def test_energy_period_comparison_formats_quantities_and_percentage_points() -> None:
+    base = SimpleNamespace(
+        year=2020,
+        country_name="Romania",
+        nuclear_generation_twh=10,
+        nuclear_capacity_gw=1.4,
+        nuclear_share_electricity_percent=18,
+        electricity_demand_twh=50,
+        electricity_generation_twh=55,
+        net_electricity_imports_twh=2,
+        fossil_generation_twh=20,
+        renewables_generation_twh=15,
+        clean_generation_twh=30,
+        estimated_capacity_factor_percent=81,
+    )
+    compare = SimpleNamespace(
+        year=2025,
+        country_name="Romania",
+        nuclear_generation_twh=12,
+        nuclear_capacity_gw=1.4,
+        nuclear_share_electricity_percent=21,
+        electricity_demand_twh=60,
+        electricity_generation_twh=63,
+        net_electricity_imports_twh=-1,
+        fossil_generation_twh=18,
+        renewables_generation_twh=20,
+        clean_generation_twh=35,
+        estimated_capacity_factor_percent=98,
+    )
+
+    frame = _energy_period_comparison_frame(base, compare)
+    share_row = frame[frame["metric"] == "Nuclear share"].iloc[0]
+    demand_row = frame[frame["metric"] == "Electricity demand"].iloc[0]
+    imports_row = frame[frame["metric"] == "Net electricity imports"].iloc[0]
+
+    assert share_row["change"] == "+3.0 pp"
+    assert share_row["change_pct"] == "n/a"
+    assert demand_row["change_pct"] == "+20.0%"
+    assert imports_row["2025"] == "1.0 TWh net exports"
+
+    readout = _energy_comparison_readout(base, compare)
+    assert "Romania, 2020 to 2025" in readout
+    assert "nuclear generation increased by 2.0 TWh" in readout
+    assert "nuclear share increased by 3.0 percentage points" in readout
 
 
 def test_overview_readout_explains_source_coverage_and_readiness() -> None:
