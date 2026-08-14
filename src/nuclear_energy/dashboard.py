@@ -365,24 +365,29 @@ def _render_transactions() -> None:
     selected_iso_code = _selected_country_iso_code(selected_country)
 
     metrics = _load_or_stop(fetch_transaction_metrics, selected_iso_code)
+    st.info(
+        "This tab counts public nuclear-sector transaction signals: official procurement rows and "
+        "detected mentions from public documents or news. Counts show activity, not confirmed investment value."
+    )
     columns = st.columns(4)
-    columns[0].metric("Transaction Signals", f"{metrics.transaction_count:,}")
-    columns[1].metric("Countries", f"{metrics.country_count:,}")
-    columns[2].metric("Public Amounts Found", f"{metrics.with_amount_count:,}")
-    columns[3].metric("Latest Signal", _format_datetime(metrics.latest_transaction_date))
+    columns[0].metric("Public Signals", f"{metrics.transaction_count:,}")
+    columns[1].metric("Countries Mentioned", f"{metrics.country_count:,}")
+    columns[2].metric("Signals With Amounts", f"{metrics.with_amount_count:,}")
+    columns[3].metric("Latest Signal Date", _format_datetime(metrics.latest_transaction_date) or "n/a")
 
     if metrics.transaction_count == 0:
         st.info("No transaction signals detected yet.")
         return
 
-    st.caption(
-        "Official award and tender rows come from public procurement feeds; detected rows come from source documents."
-    )
+    st.caption(_transaction_readout(metrics))
 
     type_summaries = _load_or_stop(fetch_transaction_type_summaries, selected_iso_code)
     year_summaries = _load_or_stop(fetch_transaction_year_summaries, selected_iso_code)
     recent_transactions = _load_or_stop(fetch_recent_transactions, limit=75, country_iso_code=selected_iso_code)
 
+    _render_transaction_evidence_table(recent_transactions)
+
+    st.markdown("#### Activity Patterns")
     left, right = st.columns(2)
     with left:
         year_frame = _frame(year_summaries)
@@ -393,12 +398,12 @@ def _render_transactions() -> None:
             y="transaction_count",
             labels={
                 "year": "Year",
-                "transaction_count": "Signals",
-                "with_amount_count": "With amount",
+                "transaction_count": "Number of signals",
+                "with_amount_count": "Signals with public amounts",
             },
             **_amount_color_kwargs(year_frame, "#d8c86b"),
         )
-        fig.update_layout(height=340, margin=dict(l=10, r=10, t=24, b=10))
+        fig.update_layout(title_text="Signals by year", height=340, margin=dict(l=10, r=10, t=44, b=10))
         fig.update_xaxes(type="category")
         st.plotly_chart(fig, use_container_width=True)
 
@@ -410,10 +415,15 @@ def _render_transactions() -> None:
             x="transaction_count",
             y="type_label",
             orientation="h",
-            labels={"transaction_count": "Signals", "type_label": "Type"},
+            labels={"transaction_count": "Number of signals", "type_label": "Type"},
             **_amount_color_kwargs(type_frame, "#98b9d7"),
         )
-        fig.update_layout(height=340, margin=dict(l=10, r=10, t=24, b=10), yaxis={"categoryorder": "total ascending"})
+        fig.update_layout(
+            title_text="Signals by type",
+            height=340,
+            margin=dict(l=10, r=10, t=44, b=10),
+            yaxis={"categoryorder": "total ascending"},
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     if selected_iso_code is None:
@@ -425,50 +435,71 @@ def _render_transactions() -> None:
                 y="transaction_count",
                 labels={
                     "country_name": "Country",
-                    "transaction_count": "Signals",
-                    "with_amount_count": "With amount",
+                    "transaction_count": "Number of signals",
+                    "with_amount_count": "Signals with public amounts",
                 },
                 **_amount_color_kwargs(country_frame, "#d8c86b"),
             )
-            fig.update_layout(height=340, margin=dict(l=10, r=10, t=24, b=10))
+            fig.update_layout(title_text="Signals by country", height=340, margin=dict(l=10, r=10, t=44, b=10))
             st.plotly_chart(fig, use_container_width=True)
 
+
+def _render_transaction_evidence_table(recent_transactions) -> None:
     transaction_frame = _frame(recent_transactions)
-    if not transaction_frame.empty:
-        transaction_frame["transaction_type"] = transaction_frame["transaction_type"].map(_transaction_type_label)
-        transaction_frame["stage"] = transaction_frame["stage"].map(_stage_label)
-        display_frame = transaction_frame[
-            [
-                "transaction_date",
-                "country_name",
-                "plant_name",
-                "transaction_type",
-                "stage",
-                "amount_text",
+    if transaction_frame.empty:
+        return
+
+    transaction_frame["transaction_type"] = transaction_frame["transaction_type"].map(_transaction_type_label)
+    transaction_frame["stage"] = transaction_frame["stage"].map(_stage_label)
+    display_frame = transaction_frame[
+        [
+            "transaction_date",
+            "country_name",
+            "plant_name",
+            "transaction_type",
+            "stage",
+            "amount_text",
+            "confidence",
+            "title",
+            "summary",
+            "source_name",
+            "source_url",
+        ]
+    ].rename(
+        columns={
+            "transaction_date": "date",
+            "country_name": "country",
+            "plant_name": "plant",
+            "transaction_type": "type",
+            "amount_text": "amount",
+            "title": "signal",
+            "summary": "evidence",
+            "source_name": "source",
+            "source_url": "url",
+        }
+    )
+    display_frame["country"] = display_frame["country"].fillna("not specified")
+    display_frame["plant"] = display_frame["plant"].fillna("not specified")
+    display_frame["amount"] = display_frame["amount"].fillna("not public")
+    display_frame["confidence"] = display_frame["confidence"].round(2)
+
+    st.markdown("#### Latest Public Signals")
+    st.caption("These rows are the source-backed evidence behind the counters and charts.")
+    st.dataframe(
+        display_frame.head(25),
+        use_container_width=True,
+        hide_index=True,
+        height=360,
+        column_config={
+            "confidence": st.column_config.ProgressColumn(
                 "confidence",
-                "summary",
-                "source_name",
-                "source_url",
-            ]
-        ].rename(
-            columns={
-                "transaction_date": "date",
-                "country_name": "country",
-                "plant_name": "plant",
-                "transaction_type": "type",
-                "amount_text": "amount",
-                "source_name": "source",
-                "source_url": "url",
-            }
-        )
-        display_frame["plant"] = display_frame["plant"].fillna("")
-        display_frame["amount"] = display_frame["amount"].fillna("not public")
-        st.dataframe(
-            display_frame,
-            use_container_width=True,
-            hide_index=True,
-            column_config={"url": st.column_config.LinkColumn("url")},
-        )
+                min_value=0.0,
+                max_value=1.0,
+                format="%.2f",
+            ),
+            "url": st.column_config.LinkColumn("source link"),
+        },
+    )
 
 
 def _render_documents(source_names: list[str]) -> None:
@@ -703,6 +734,27 @@ def _transaction_type_label(value: str) -> str:
 
 def _stage_label(value: str) -> str:
     return value.replace("_", " ").title()
+
+
+def _transaction_readout(metrics) -> str:
+    signal_word = _plural(metrics.transaction_count, "signal")
+    signal_verb = "is" if metrics.transaction_count == 1 else "are"
+    country_word = _plural(metrics.country_count, "country", "countries")
+    amount_word = _plural(metrics.with_amount_count, "signal")
+    amount_sentence = (
+        "No public amount values were found yet, so this view is counting activity rather than deal value."
+        if metrics.with_amount_count == 0
+        else f"{metrics.with_amount_count:,} {amount_word} include public amount values."
+    )
+    latest = _format_datetime(metrics.latest_transaction_date) or "n/a"
+    return (
+        f"{metrics.transaction_count:,} public {signal_word} {signal_verb} in scope across "
+        f"{metrics.country_count:,} {country_word}. Latest signal date: {latest}. {amount_sentence}"
+    )
+
+
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    return singular if count == 1 else plural or f"{singular}s"
 
 
 def _has_positive_amount_counts(frame: pd.DataFrame) -> bool:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -13,6 +14,7 @@ from nuclear_energy.dashboard import (
     _selected_country_iso_code,
     _secret_matches,
     _stage_label,
+    _transaction_readout,
     _transaction_type_label,
 )
 
@@ -39,6 +41,21 @@ def test_transaction_helpers_format_labels_and_country_selection() -> None:
     assert _stage_label("public_tender") == "Public Tender"
     assert _selected_country_iso_code("Romania (ROU)") == "ROU"
     assert _selected_country_iso_code("All countries") is None
+
+
+def test_transaction_readout_explains_public_signals_without_amounts() -> None:
+    metrics = SimpleNamespace(
+        transaction_count=8,
+        country_count=7,
+        with_amount_count=0,
+        latest_transaction_date=datetime(2026, 8, 12, tzinfo=timezone.utc),
+    )
+
+    readout = _transaction_readout(metrics)
+
+    assert "8 public signals" in readout
+    assert "7 countries" in readout
+    assert "No public amount values" in readout
 
 
 def test_amount_color_helpers_skip_colorbar_without_public_amounts() -> None:
