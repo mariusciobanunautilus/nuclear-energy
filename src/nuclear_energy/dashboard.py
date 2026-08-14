@@ -431,15 +431,6 @@ def _render_energy_system() -> None:
     country_columns[3].metric("Nuclear Capacity", _format_gw(latest.nuclear_capacity_gw))
     country_columns[4].metric("Usage", _format_percent(latest.estimated_capacity_factor_percent))
 
-    st.markdown("#### Nuclear Plant Technologies")
-    st.caption(
-        "Country-level reactor technology mix from loaded plant records. Rows marked not loaded have electricity data but no plant-level technology records yet."
-    )
-    if technology_summary.empty:
-        st.info("No reactor technology rows are loaded yet.")
-    else:
-        st.dataframe(technology_summary, use_container_width=True, hide_index=True)
-
     selected_technology_rows = _load_or_stop(fetch_reactor_technology_summaries, selected_iso_code)
     selected_technology_frame = _technology_detail_frame(_frame(selected_technology_rows))
     st.markdown(f"#### {latest.country_name} Reactor Technologies")
@@ -450,6 +441,15 @@ def _render_energy_system() -> None:
         st.info("No plant-level reactor technology rows are loaded for this country yet.")
     else:
         st.dataframe(selected_technology_frame, use_container_width=True, hide_index=True)
+
+    with st.expander("All Country Technology Mix", expanded=False):
+        st.caption(
+            "Country-level reactor technology mix from loaded plant records. Rows marked not loaded have electricity data but no plant-level technology records yet."
+        )
+        if technology_summary.empty:
+            st.info("No reactor technology rows are loaded yet.")
+        else:
+            st.dataframe(technology_summary, use_container_width=True, hide_index=True)
 
     st.markdown("#### Period Comparison")
     comparison_mode = st.selectbox(
@@ -556,69 +556,70 @@ def _render_energy_system() -> None:
     fig.update_layout(height=360, margin=dict(l=10, r=10, t=24, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("#### Country Electricity Snapshot")
-    st.caption(
-        "Latest available annual electricity indicators for each country, sorted by nuclear generation and capacity."
-    )
-    display_summary = summary_frame[
-        [
-            "country_name",
-            "iso_code",
-            "latest_year",
-            "nuclear_generation_twh",
-            "nuclear_capacity_gw",
-            "nuclear_share_electricity_percent",
-            "electricity_demand_twh",
-            "net_trade",
-            "estimated_capacity_factor_percent",
-        ]
-    ].rename(
-        columns={
-            "country_name": "country",
-            "iso_code": "iso",
-            "latest_year": "year",
-            "nuclear_generation_twh": "nuclear_twh",
-            "nuclear_capacity_gw": "capacity_gw",
-            "nuclear_share_electricity_percent": "nuclear_share_pct",
-            "electricity_demand_twh": "demand_twh",
-            "estimated_capacity_factor_percent": "usage_pct",
-        }
-    )
-    st.dataframe(display_summary, use_container_width=True, hide_index=True)
+    with st.expander("Underlying Electricity Tables", expanded=False):
+        st.markdown("#### Country Electricity Snapshot")
+        st.caption(
+            "Latest available annual electricity indicators for each country, sorted by nuclear generation and capacity."
+        )
+        display_summary = summary_frame[
+            [
+                "country_name",
+                "iso_code",
+                "latest_year",
+                "nuclear_generation_twh",
+                "nuclear_capacity_gw",
+                "nuclear_share_electricity_percent",
+                "electricity_demand_twh",
+                "net_trade",
+                "estimated_capacity_factor_percent",
+            ]
+        ].rename(
+            columns={
+                "country_name": "country",
+                "iso_code": "iso",
+                "latest_year": "year",
+                "nuclear_generation_twh": "nuclear_twh",
+                "nuclear_capacity_gw": "capacity_gw",
+                "nuclear_share_electricity_percent": "nuclear_share_pct",
+                "electricity_demand_twh": "demand_twh",
+                "estimated_capacity_factor_percent": "usage_pct",
+            }
+        )
+        st.dataframe(display_summary, use_container_width=True, hide_index=True)
 
-    st.markdown(f"#### {latest.country_name} Annual Electricity History")
-    st.caption(
-        "Year-by-year generation, capacity, trade, and fuel-mix metrics for the country selected above."
-    )
-    display_years = year_frame[
-        [
-            "year",
-            "nuclear_generation_twh",
-            "nuclear_capacity_gw",
-            "nuclear_share_electricity_percent",
-            "electricity_generation_twh",
-            "electricity_demand_twh",
-            "net_electricity_imports_twh",
-            "fossil_generation_twh",
-            "renewables_generation_twh",
-            "clean_generation_twh",
-            "estimated_capacity_factor_percent",
-        ]
-    ].rename(
-        columns={
-            "nuclear_generation_twh": "nuclear_twh",
-            "nuclear_capacity_gw": "capacity_gw",
-            "nuclear_share_electricity_percent": "nuclear_share_pct",
-            "electricity_generation_twh": "generation_twh",
-            "electricity_demand_twh": "demand_twh",
-            "net_electricity_imports_twh": "net_imports_twh",
-            "fossil_generation_twh": "fossil_twh",
-            "renewables_generation_twh": "renewables_twh",
-            "clean_generation_twh": "clean_twh",
-            "estimated_capacity_factor_percent": "usage_pct",
-        }
-    )
-    st.dataframe(display_years, use_container_width=True, hide_index=True)
+        st.markdown(f"#### {latest.country_name} Annual Electricity History")
+        st.caption(
+            "Year-by-year generation, capacity, trade, and fuel-mix metrics for the country selected above."
+        )
+        display_years = year_frame[
+            [
+                "year",
+                "nuclear_generation_twh",
+                "nuclear_capacity_gw",
+                "nuclear_share_electricity_percent",
+                "electricity_generation_twh",
+                "electricity_demand_twh",
+                "net_electricity_imports_twh",
+                "fossil_generation_twh",
+                "renewables_generation_twh",
+                "clean_generation_twh",
+                "estimated_capacity_factor_percent",
+            ]
+        ].rename(
+            columns={
+                "nuclear_generation_twh": "nuclear_twh",
+                "nuclear_capacity_gw": "capacity_gw",
+                "nuclear_share_electricity_percent": "nuclear_share_pct",
+                "electricity_generation_twh": "generation_twh",
+                "electricity_demand_twh": "demand_twh",
+                "net_electricity_imports_twh": "net_imports_twh",
+                "fossil_generation_twh": "fossil_twh",
+                "renewables_generation_twh": "renewables_twh",
+                "clean_generation_twh": "clean_twh",
+                "estimated_capacity_factor_percent": "usage_pct",
+            }
+        )
+        st.dataframe(display_years, use_container_width=True, hide_index=True)
 
 
 def _render_events() -> None:
