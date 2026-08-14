@@ -1,5 +1,5 @@
 from nuclear_energy import config
-from nuclear_energy.config import _split_csv_env
+from nuclear_energy.config import DEFAULT_WATCHLIST_ENTITIES, _split_csv_env
 
 
 def test_split_csv_env_trims_empty_values():
@@ -39,5 +39,22 @@ def test_settings_loads_watchlist_values(monkeypatch):
         assert settings.watchlist_projects == ["Cernavoda", "Sizewell C"]
         assert settings.watchlist_countries == ["USA", "ROU"]
         assert settings.watchlist_themes == ["fuel_cycle", "policy"]
+    finally:
+        config.get_settings.cache_clear()
+
+
+def test_settings_uses_default_trader_watchlist(monkeypatch):
+    monkeypatch.delenv("WATCHLIST_ENTITIES", raising=False)
+    monkeypatch.delenv("WATCHLIST_PROJECTS", raising=False)
+    monkeypatch.delenv("WATCHLIST_COUNTRIES", raising=False)
+    monkeypatch.delenv("WATCHLIST_THEMES", raising=False)
+
+    config.get_settings.cache_clear()
+    try:
+        settings = config.get_settings()
+        assert settings.watchlist_entities == DEFAULT_WATCHLIST_ENTITIES
+        assert "Cernavoda" in settings.watchlist_projects
+        assert "USA" in settings.watchlist_countries
+        assert "fuel_cycle" in settings.watchlist_themes
     finally:
         config.get_settings.cache_clear()

@@ -90,13 +90,13 @@ nuclear-energy sync-relationships
 
 The dashboard Review Queue turns normalized events into a trader-maintained source of truth. It ranks items by review urgency, shows source evidence, records confirmations, promotes important events into the Daily Tape, marks noise, links duplicates, and stores correction history instead of silently overwriting facts.
 
-Optional trader watchlists can be configured with comma-separated environment values.
+Trader watchlists have built-in defaults and can be overridden with comma-separated environment values.
 
 ```toml
-WATCHLIST_ENTITIES = "Westinghouse Electric Company,Cameco,Centrus Energy,Orano"
-WATCHLIST_PROJECTS = "Cernavoda,Sizewell C,Dukovany"
-WATCHLIST_COUNTRIES = "USA,ROU,CAN,FRA"
-WATCHLIST_THEMES = "fuel_cycle,policy,project_stage"
+WATCHLIST_ENTITIES = "Westinghouse Electric Company,Cameco,Centrus Energy,Orano,Framatome,Urenco,Kazatomprom,Rosatom"
+WATCHLIST_PROJECTS = "Cernavoda,Dukovany,Sizewell C,Hinkley Point C,Vogtle,Bruce"
+WATCHLIST_COUNTRIES = "USA,CAN,FRA,GBR,ROU,CZE,POL,BGR,UKR,RUS,CHN,JPN,KOR,KAZ"
+WATCHLIST_THEMES = "fuel_cycle,policy,regulation,project_stage,construction,operations,project_risk,supply_risk"
 ```
 
 7. Embed stored chunks and try semantic search.
