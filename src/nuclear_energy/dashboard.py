@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hmac
+import os
 from dataclasses import asdict
 from datetime import datetime
 
@@ -7,6 +9,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from nuclear_energy.automation import GITHUB_ACTIONS_URL, WorkflowDispatchError, trigger_github_workflow
 from nuclear_energy.db import (
     fetch_dashboard_metrics,
     fetch_documents_for_export,
@@ -27,6 +30,12 @@ from nuclear_energy.exports import documents_to_csv, documents_to_markdown
 
 ALL_SOURCES = "All sources"
 ALL_COUNTRIES = "All countries"
+WORKFLOW_MODES = {
+    "Full refresh": "all",
+    "Official transactions": "official-transactions",
+    "Documents and news": "documents",
+    "Energy data": "energy",
+}
 
 
 def main() -> None:
@@ -39,7 +48,15 @@ def main() -> None:
 
     _render_metric_strip(metrics)
 
-    tabs = st.tabs(["Overview", "Energy System", "Transactions", "Documents", "Keyword Search", "Exports"])
+    tabs = st.tabs([
+        "Overview",
+        "Energy System",
+        "Transactions",
+        "Documents",
+        "Keyword Search",
+        "Exports",
+        "Automation",
+    ])
     with tabs[0]:
         _render_overview(source_summaries)
     with tabs[1]:
@@ -52,6 +69,8 @@ def main() -> None:
         _render_keyword_search(source_names)
     with tabs[5]:
         _render_exports(source_names)
+    with tabs[6]:
+        _render_automation()
 
 
 def _render_metric_strip(metrics) -> None:
@@ -542,6 +561,42 @@ def _render_exports(source_names: list[str]) -> None:
         st.dataframe(frame, use_container_width=True, hide_index=True)
 
 
+def _render_automation() -> None:
+    token = _secret_value("GITHUB_ACTIONS_TOKEN")
+    expected_pin = _secret_value("WORKFLOW_TRIGGER_PIN")
+    selected_mode = st.radio("Workflow", list(WORKFLOW_MODES), horizontal=True)
+    pin = st.text_input("PIN", type="password")
+
+    if not token or not expected_pin:
+        st.info("Workflow trigger is not configured yet.")
+        return
+
+    if st.button("Run workflow", type="primary", use_container_width=True):
+        if not _secret_matches(pin, expected_pin):
+            st.error("Incorrect PIN.")
+            return
+
+        with st.spinner("Starting workflow..."):
+            try:
+                result = trigger_github_workflow(
+                    token=token,
+                    owner="mariusciobanunautilus",
+                    repo="nuclear-energy",
+                    workflow_id="public-ingest.yml",
+                    ref="main",
+                    inputs={"mode": WORKFLOW_MODES[selected_mode]},
+                )
+            except WorkflowDispatchError as exc:
+                st.error(str(exc))
+                return
+            except Exception as exc:
+                st.error(f"GitHub request failed: {exc}")
+                return
+
+        st.success("Workflow started.")
+        st.markdown(f"[Open GitHub Actions]({result.html_url or GITHUB_ACTIONS_URL})")
+
+
 def _load_or_stop(func, *args, **kwargs):
     try:
         return func(*args, **kwargs)
@@ -659,6 +714,25 @@ def _amount_color_kwargs(frame: pd.DataFrame, fallback_color: str) -> dict:
             "color_continuous_scale": "Tealrose",
         }
     return {"color_discrete_sequence": [fallback_color]}
+
+
+def _secret_value(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value:
+        return value.strip()
+
+    try:
+        value = st.secrets.get(name)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _secret_matches(value: str, expected: str) -> bool:
+    return bool(value and expected and hmac.compare_digest(value, expected))
 
 
 def _selected_country_iso_code(selected_country: str) -> str | None:

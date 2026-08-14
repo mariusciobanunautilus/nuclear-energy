@@ -95,6 +95,9 @@ nuclear-energy export-documents --format markdown --output exports/documents.md
 
 - `CI` runs the test suite on pushes and pull requests.
 - `Public Source Ingest` can run manually or on its daily schedule. It skips itself unless the repository has a `DATABASE_URL` secret configured for a Postgres/Supabase database, using the same `postgresql+psycopg://...` format as local development.
+- The Streamlit `Automation` tab can trigger `Public Source Ingest` when Streamlit secrets include:
+  - `GITHUB_ACTIONS_TOKEN`: a GitHub fine-grained token for this repository with Actions read/write access.
+  - `WORKFLOW_TRIGGER_PIN`: a private PIN required in the app before the workflow can be started.
 
 ## Tests
 

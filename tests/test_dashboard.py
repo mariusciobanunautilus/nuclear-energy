@@ -10,6 +10,7 @@ from nuclear_energy.dashboard import (
     _format_trade_balance,
     _has_positive_amount_counts,
     _selected_country_iso_code,
+    _secret_matches,
     _stage_label,
     _transaction_type_label,
 )
@@ -51,3 +52,9 @@ def test_amount_color_helpers_use_amounts_when_available() -> None:
 
     assert _has_positive_amount_counts(frame) is True
     assert _amount_color_kwargs(frame, "#abc")["color"] == "with_amount_count"
+
+
+def test_secret_matches_requires_exact_pin() -> None:
+    assert _secret_matches("1234", "1234") is True
+    assert _secret_matches("1234", "9999") is False
+    assert _secret_matches("", "1234") is False

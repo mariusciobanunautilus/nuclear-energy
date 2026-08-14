@@ -2,6 +2,17 @@ name: Public Source Ingest
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Refresh scope"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - official-transactions
+          - documents
+          - energy
   schedule:
     - cron: "17 6 * * *"
 
@@ -11,6 +22,7 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       RSS_FEEDS: https://world-nuclear-news.org/rss
+      INGEST_MODE: ${{ github.event.inputs.mode || 'all' }}
 
     steps:
       - name: Check out repository
@@ -34,12 +46,30 @@ jobs:
             exit 0
           fi
 
-          nuclear-energy ingest-rss --limit 20
-          nuclear-energy ingest-federal-register --limit 20
-          nuclear-energy ingest-eur-lex --limit 20
-          nuclear-energy ingest-gdelt --limit 20 || echo "GDELT ingest skipped or rate-limited."
-          nuclear-energy ingest-energy --since-year 2000
-          nuclear-energy ingest-usaspending --limit 50 || echo "USAspending ingest skipped or unavailable."
-          nuclear-energy ingest-eu-ted --limit 50 || echo "EU TED ingest skipped or unavailable."
-          nuclear-energy extract-documents --limit 30
-          nuclear-energy detect-transactions --limit 500
+          case "$INGEST_MODE" in
+            all|official-transactions|documents|energy)
+              echo "Running public ingest mode: $INGEST_MODE"
+              ;;
+            *)
+              echo "Unsupported ingest mode: $INGEST_MODE"
+              exit 1
+              ;;
+          esac
+
+          if [ "$INGEST_MODE" = "all" ] || [ "$INGEST_MODE" = "documents" ]; then
+            nuclear-energy ingest-rss --limit 20
+            nuclear-energy ingest-federal-register --limit 20
+            nuclear-energy ingest-eur-lex --limit 20
+            nuclear-energy ingest-gdelt --limit 20 || echo "GDELT ingest skipped or rate-limited."
+            nuclear-energy extract-documents --limit 30
+            nuclear-energy detect-transactions --limit 500
+          fi
+
+          if [ "$INGEST_MODE" = "all" ] || [ "$INGEST_MODE" = "energy" ]; then
+            nuclear-energy ingest-energy --since-year 2000
+          fi
+
+          if [ "$INGEST_MODE" = "all" ] || [ "$INGEST_MODE" = "official-transactions" ]; then
+            nuclear-energy ingest-usaspending --limit 50 || echo "USAspending ingest skipped or unavailable."
+            nuclear-energy ingest-eu-ted --limit 50 || echo "EU TED ingest skipped or unavailable."
+          fi
