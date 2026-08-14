@@ -856,34 +856,63 @@ def _render_review_queue() -> None:
     st.markdown("#### Review Event")
     labels = {f"{item.title[:100]} ({item.id[:8]})": item.id for item in queue}
     items_by_id = {item.id: item for item in queue}
-    with st.form("event_review_form"):
-        selected_label = st.selectbox("Event", list(labels))
-        selected_event = items_by_id[labels[selected_label]]
+    selected_label = st.selectbox("Event", list(labels), key="review_event_selector")
+    selected_event = items_by_id[labels[selected_label]]
+    selected_event_key = selected_event.id.replace("-", "_")
+    with st.form(f"event_review_form_{selected_event_key}"):
         status = st.selectbox(
             "Decision",
             ["reviewed", "important", "irrelevant", "duplicate", "corrected"],
             format_func=_review_decision_label,
+            key=f"review_status_{selected_event_key}",
         )
         duplicate_of = st.text_input(
             "Duplicate of event id",
             placeholder="Only needed when marking as duplicate",
             disabled=status != "duplicate",
+            key=f"review_duplicate_of_{selected_event_key}",
         )
-        reviewer = st.text_input("Reviewer", placeholder="Optional")
+        reviewer = st.text_input("Reviewer", placeholder="Optional", key=f"review_reviewer_{selected_event_key}")
         st.markdown("##### Correction Fields")
         correction_columns = st.columns(2)
-        corrected_title = correction_columns[0].text_input("Title", value=selected_event.title)
+        corrected_title = correction_columns[0].text_input(
+            "Title",
+            value=selected_event.title,
+            key=f"review_title_{selected_event_key}",
+        )
         corrected_country = correction_columns[1].text_input(
             "Country ISO",
             value=selected_event.country_iso_code or "",
             max_chars=3,
+            key=f"review_country_{selected_event_key}",
         )
-        corrected_project = correction_columns[0].text_input("Project", value=selected_event.project_name or "")
-        corrected_amount = correction_columns[1].text_input("Public amount", value=selected_event.amount_text or "")
-        corrected_summary = st.text_area("Summary", value=selected_event.summary, height=100)
-        corrected_flags = st.text_input("Why it matters", value=", ".join(selected_event.materiality_flags))
-        corrected_themes = st.text_input("Themes", value=", ".join(selected_event.themes))
-        note = st.text_area("Note", height=90)
+        corrected_project = correction_columns[0].text_input(
+            "Project",
+            value=selected_event.project_name or "",
+            key=f"review_project_{selected_event_key}",
+        )
+        corrected_amount = correction_columns[1].text_input(
+            "Public amount",
+            value=selected_event.amount_text or "",
+            key=f"review_amount_{selected_event_key}",
+        )
+        corrected_summary = st.text_area(
+            "Summary",
+            value=selected_event.summary,
+            height=100,
+            key=f"review_summary_{selected_event_key}",
+        )
+        corrected_flags = st.text_input(
+            "Why it matters",
+            value=", ".join(selected_event.materiality_flags),
+            key=f"review_flags_{selected_event_key}",
+        )
+        corrected_themes = st.text_input(
+            "Themes",
+            value=", ".join(selected_event.themes),
+            key=f"review_themes_{selected_event_key}",
+        )
+        note = st.text_area("Note", height=90, key=f"review_note_{selected_event_key}")
         submitted = st.form_submit_button("Save review")
     if submitted:
         corrected_fields = _event_correction_payload(
