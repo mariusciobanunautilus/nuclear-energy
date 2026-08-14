@@ -177,6 +177,20 @@ class EnergyYearRecord:
 
 
 @dataclass(frozen=True)
+class ReactorTechnologySummary:
+    iso_code: str
+    country_name: str
+    plant_name: str
+    reactor_name: str
+    reactor_status: str
+    technology_code: str | None
+    technology_name: str | None
+    net_capacity_mwe: int | None
+    source_title: str | None
+    source_url: str | None
+
+
+@dataclass(frozen=True)
 class TransactionDetectionDocument:
     id: str
     title: str
@@ -2225,6 +2239,62 @@ def fetch_energy_years(iso_code: str) -> list[EnergyYearRecord]:
                 _optional_float(row["nuclear_generation_twh"]),
                 _optional_float(row["nuclear_capacity_gw"]),
             ),
+        )
+        for row in rows
+    ]
+
+
+def fetch_reactor_technology_summaries(iso_code: str | None = None) -> list[ReactorTechnologySummary]:
+    params = {}
+    country_filter = ""
+    if iso_code:
+        params["iso_code"] = iso_code.strip().upper()
+        country_filter = "where c.iso3 = :iso_code"
+
+    statement = sql_text(
+        f"""
+        select
+          c.iso3 as iso_code,
+          c.name as country_name,
+          p.name as plant_name,
+          r.name as reactor_name,
+          r.status::text as reactor_status,
+          rt.code as technology_code,
+          rt.name as technology_name,
+          r.net_capacity_mwe,
+          coalesce(rs.title, ps.title) as source_title,
+          coalesce(rs.url, ps.url) as source_url
+        from public.reactors as r
+        join public.power_plants as p
+          on p.id = r.plant_id
+        join public.countries as c
+          on c.id = p.country_id
+        left join public.reactor_technologies as rt
+          on rt.id = r.technology_id
+        left join public.source_documents as rs
+          on rs.id = r.source_id
+        left join public.source_documents as ps
+          on ps.id = p.source_id
+        {country_filter}
+        order by c.name, p.name, r.name
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        ReactorTechnologySummary(
+            iso_code=row["iso_code"],
+            country_name=row["country_name"],
+            plant_name=row["plant_name"],
+            reactor_name=row["reactor_name"],
+            reactor_status=row["reactor_status"],
+            technology_code=row["technology_code"],
+            technology_name=row["technology_name"],
+            net_capacity_mwe=row["net_capacity_mwe"],
+            source_title=row["source_title"],
+            source_url=row["source_url"],
         )
         for row in rows
     ]

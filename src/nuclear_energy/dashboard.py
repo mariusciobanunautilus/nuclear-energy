@@ -29,6 +29,7 @@ from nuclear_energy.db import (
     fetch_review_queue,
     fetch_watchlist_events,
     fetch_project_summaries,
+    fetch_reactor_technology_summaries,
     fetch_source_summaries,
     fetch_source_health,
     fetch_recent_transactions,
@@ -368,6 +369,8 @@ def _render_energy_system() -> None:
     columns[4].metric("Electricity Demand", _format_twh(metrics.electricity_demand_twh))
 
     summary_frame["net_trade"] = summary_frame["net_electricity_imports_twh"].map(_format_trade_balance)
+    reactor_technology_rows = _load_or_stop(fetch_reactor_technology_summaries)
+    technology_summary = _technology_mix_summary_frame(_frame(reactor_technology_rows), summary_frame)
 
     left, right = st.columns([3, 2])
     with left:
@@ -533,6 +536,15 @@ def _render_energy_system() -> None:
     fig.update_layout(height=360, margin=dict(l=10, r=10, t=24, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
+    st.markdown("#### Nuclear Plant Technologies")
+    st.caption(
+        "Public plant and reactor technology records from IAEA PRIS and related public source documents."
+    )
+    if technology_summary.empty:
+        st.info("No reactor technology rows are loaded yet.")
+    else:
+        st.dataframe(technology_summary, use_container_width=True, hide_index=True)
+
     display_summary = summary_frame[
         [
             "country_name",
@@ -558,6 +570,14 @@ def _render_energy_system() -> None:
         }
     )
     st.dataframe(display_summary, use_container_width=True, hide_index=True)
+
+    selected_technology_rows = _load_or_stop(fetch_reactor_technology_summaries, selected_iso_code)
+    selected_technology_frame = _technology_detail_frame(_frame(selected_technology_rows))
+    st.markdown(f"#### {latest.country_name} Reactor Technologies")
+    if selected_technology_frame.empty:
+        st.info("No plant-level reactor technology rows are loaded for this country yet.")
+    else:
+        st.dataframe(selected_technology_frame, use_container_width=True, hide_index=True)
 
     display_years = year_frame[
         [
@@ -1328,6 +1348,106 @@ def _capacity_chart_frame(summary_frame: pd.DataFrame, limit: int = 20) -> pd.Da
     return frame
 
 
+def _technology_mix_summary_frame(frame: pd.DataFrame, country_frame: pd.DataFrame | None = None) -> pd.DataFrame:
+    if frame.empty:
+        if country_frame is None or country_frame.empty:
+            return pd.DataFrame()
+        summary = country_frame[["country_name", "iso_code"]].drop_duplicates().copy()
+        summary["plants"] = 0
+        summary["reactors"] = 0
+        summary["capacity_mwe"] = "n/a"
+        summary["technology_mix"] = "not loaded"
+        return summary.rename(columns={"country_name": "country", "iso_code": "iso"})
+
+    working = frame.copy()
+    working["technology_code"] = working["technology_code"].fillna("Unknown")
+    working["net_capacity_mwe"] = pd.to_numeric(working["net_capacity_mwe"], errors="coerce")
+    grouped = (
+        working.groupby(["country_name", "iso_code", "technology_code"], dropna=False)
+        .agg(
+            reactor_count=("reactor_name", "count"),
+            net_capacity_mwe=("net_capacity_mwe", "sum"),
+        )
+        .reset_index()
+        .sort_values(["country_name", "technology_code"])
+    )
+    grouped["technology_part"] = grouped.apply(
+        lambda row: f"{row['technology_code']}: {int(row['reactor_count'])}",
+        axis=1,
+    )
+    summary = (
+        grouped.groupby(["country_name", "iso_code"], dropna=False)
+        .agg(
+            reactors=("reactor_count", "sum"),
+            net_capacity_mwe=("net_capacity_mwe", "sum"),
+            technology_mix=("technology_part", lambda values: ", ".join(values)),
+        )
+        .reset_index()
+    )
+    plant_counts = (
+        working.groupby(["country_name", "iso_code"], dropna=False)["plant_name"]
+        .nunique()
+        .rename("plants")
+        .reset_index()
+    )
+    summary = (
+        summary.merge(plant_counts, on=["country_name", "iso_code"], how="left")
+        .sort_values(["reactors", "country_name"], ascending=[False, True])
+    )
+    summary["capacity_mwe"] = summary["net_capacity_mwe"].map(_format_mwe)
+    summary = summary[
+        ["country_name", "iso_code", "plants", "reactors", "capacity_mwe", "technology_mix"]
+    ].rename(
+        columns={
+            "country_name": "country",
+            "iso_code": "iso",
+        }
+    )
+    if country_frame is None or country_frame.empty:
+        return summary
+
+    countries = country_frame[["country_name", "iso_code"]].drop_duplicates().rename(
+        columns={"country_name": "country", "iso_code": "iso"}
+    )
+    summary = countries.merge(summary, on=["country", "iso"], how="left")
+    summary["plants"] = summary["plants"].fillna(0).astype(int)
+    summary["reactors"] = summary["reactors"].fillna(0).astype(int)
+    summary["capacity_mwe"] = summary["capacity_mwe"].fillna("n/a")
+    summary["technology_mix"] = summary["technology_mix"].fillna("not loaded")
+    return summary.sort_values(["reactors", "country"], ascending=[False, True])
+
+
+def _technology_detail_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame()
+
+    display_frame = frame[
+        [
+            "plant_name",
+            "reactor_name",
+            "reactor_status",
+            "technology_code",
+            "technology_name",
+            "net_capacity_mwe",
+            "source_title",
+            "source_url",
+        ]
+    ].rename(
+        columns={
+            "plant_name": "plant",
+            "reactor_name": "unit",
+            "reactor_status": "status",
+            "technology_code": "technology",
+            "technology_name": "technology_name",
+            "net_capacity_mwe": "net_mwe",
+            "source_title": "source",
+            "source_url": "source_url",
+        }
+    )
+    display_frame["technology"] = display_frame["technology"].fillna("Unknown")
+    return display_frame
+
+
 def _latest_energy_record(records):
     for record in reversed(records):
         if _has_nuclear_energy_data(record):
@@ -1473,6 +1593,10 @@ def _format_twh(value) -> str:
 
 def _format_gw(value) -> str:
     return _format_quantity(value, "GW")
+
+
+def _format_mwe(value) -> str:
+    return _format_quantity(value, "MWe")
 
 
 def _format_percent(value) -> str:

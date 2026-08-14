@@ -33,6 +33,8 @@ from nuclear_energy.dashboard import (
     _split_review_values,
     _source_freshness_warnings,
     _stage_label,
+    _technology_detail_frame,
+    _technology_mix_summary_frame,
     _transaction_readout,
     _transaction_type_label,
 )
@@ -236,6 +238,104 @@ def test_capacity_chart_frame_ranks_by_capacity_and_labels_united_states() -> No
 
     assert result.iloc[0]["country_label"] == "United States (USA)"
     assert result["country_label"].tolist() == ["United States (USA)", "China (CHN)", "France (FRA)"]
+
+
+def test_technology_mix_summary_groups_reactor_types_by_country() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "country_name": "Romania",
+                "iso_code": "ROU",
+                "plant_name": "Cernavoda",
+                "reactor_name": "Cernavoda 1",
+                "technology_code": "PHWR",
+                "net_capacity_mwe": 650,
+            },
+            {
+                "country_name": "Romania",
+                "iso_code": "ROU",
+                "plant_name": "Cernavoda",
+                "reactor_name": "Cernavoda 2",
+                "technology_code": "PHWR",
+                "net_capacity_mwe": 650,
+            },
+            {
+                "country_name": "United States",
+                "iso_code": "USA",
+                "plant_name": "Watts Bar",
+                "reactor_name": "Watts Bar 1",
+                "technology_code": "PWR",
+                "net_capacity_mwe": 1211,
+            },
+        ]
+    )
+
+    result = _technology_mix_summary_frame(frame)
+    romania = result[result["iso"] == "ROU"].iloc[0]
+
+    assert romania["plants"] == 1
+    assert romania["reactors"] == 2
+    assert romania["capacity_mwe"] == "1,300 MWe"
+    assert romania["technology_mix"] == "PHWR: 2"
+
+
+def test_technology_mix_summary_shows_countries_without_loaded_reactors() -> None:
+    reactor_frame = pd.DataFrame(
+        [
+            {
+                "country_name": "Romania",
+                "iso_code": "ROU",
+                "plant_name": "Cernavoda",
+                "reactor_name": "Cernavoda 1",
+                "technology_code": "PHWR",
+                "net_capacity_mwe": 650,
+            }
+        ]
+    )
+    country_frame = pd.DataFrame(
+        [
+            {"country_name": "Romania", "iso_code": "ROU"},
+            {"country_name": "France", "iso_code": "FRA"},
+        ]
+    )
+
+    result = _technology_mix_summary_frame(reactor_frame, country_frame)
+    france = result[result["iso"] == "FRA"].iloc[0]
+
+    assert france["plants"] == 0
+    assert france["reactors"] == 0
+    assert france["technology_mix"] == "not loaded"
+
+
+def test_technology_detail_frame_labels_missing_technology() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "plant_name": "Plant A",
+                "reactor_name": "Unit 1",
+                "reactor_status": "operational",
+                "technology_code": None,
+                "technology_name": None,
+                "net_capacity_mwe": None,
+                "source_title": "Source",
+                "source_url": "https://example.test",
+            }
+        ]
+    )
+
+    result = _technology_detail_frame(frame)
+
+    assert result.iloc[0]["technology"] == "Unknown"
+    assert result.columns.tolist() == [
+        "plant",
+        "unit",
+        "status",
+        "technology",
+        "technology_name",
+        "net_mwe",
+        "source",
+        "source_url",
+    ]
 
 
 def test_secret_matches_requires_exact_pin() -> None:
