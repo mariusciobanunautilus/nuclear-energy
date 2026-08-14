@@ -431,6 +431,26 @@ def _render_energy_system() -> None:
     country_columns[3].metric("Nuclear Capacity", _format_gw(latest.nuclear_capacity_gw))
     country_columns[4].metric("Usage", _format_percent(latest.estimated_capacity_factor_percent))
 
+    st.markdown("#### Nuclear Plant Technologies")
+    st.caption(
+        "Country-level reactor technology mix from loaded plant records. Rows marked not loaded have electricity data but no plant-level technology records yet."
+    )
+    if technology_summary.empty:
+        st.info("No reactor technology rows are loaded yet.")
+    else:
+        st.dataframe(technology_summary, use_container_width=True, hide_index=True)
+
+    selected_technology_rows = _load_or_stop(fetch_reactor_technology_summaries, selected_iso_code)
+    selected_technology_frame = _technology_detail_frame(_frame(selected_technology_rows))
+    st.markdown(f"#### {latest.country_name} Reactor Technologies")
+    st.caption(
+        "Plant and unit-level reactor records for the selected country, including operating status, reactor type, net capacity, and source."
+    )
+    if selected_technology_frame.empty:
+        st.info("No plant-level reactor technology rows are loaded for this country yet.")
+    else:
+        st.dataframe(selected_technology_frame, use_container_width=True, hide_index=True)
+
     st.markdown("#### Period Comparison")
     comparison_mode = st.selectbox(
         "Compare",
@@ -536,15 +556,10 @@ def _render_energy_system() -> None:
     fig.update_layout(height=360, margin=dict(l=10, r=10, t=24, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("#### Nuclear Plant Technologies")
+    st.markdown("#### Country Electricity Snapshot")
     st.caption(
-        "Public plant and reactor technology records from IAEA PRIS and related public source documents."
+        "Latest available annual electricity indicators for each country, sorted by nuclear generation and capacity."
     )
-    if technology_summary.empty:
-        st.info("No reactor technology rows are loaded yet.")
-    else:
-        st.dataframe(technology_summary, use_container_width=True, hide_index=True)
-
     display_summary = summary_frame[
         [
             "country_name",
@@ -571,14 +586,10 @@ def _render_energy_system() -> None:
     )
     st.dataframe(display_summary, use_container_width=True, hide_index=True)
 
-    selected_technology_rows = _load_or_stop(fetch_reactor_technology_summaries, selected_iso_code)
-    selected_technology_frame = _technology_detail_frame(_frame(selected_technology_rows))
-    st.markdown(f"#### {latest.country_name} Reactor Technologies")
-    if selected_technology_frame.empty:
-        st.info("No plant-level reactor technology rows are loaded for this country yet.")
-    else:
-        st.dataframe(selected_technology_frame, use_container_width=True, hide_index=True)
-
+    st.markdown(f"#### {latest.country_name} Annual Electricity History")
+    st.caption(
+        "Year-by-year generation, capacity, trade, and fuel-mix metrics for the country selected above."
+    )
     display_years = year_frame[
         [
             "year",
