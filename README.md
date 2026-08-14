@@ -99,6 +99,14 @@ nuclear-energy export-documents --format markdown --output exports/documents.md
   - `GITHUB_ACTIONS_TOKEN`: a GitHub fine-grained token for this repository with Actions read/write access.
   - `WORKFLOW_TRIGGER_PIN`: a private PIN required in the app before the workflow can be started.
 
+Streamlit secrets example:
+
+```toml
+DATABASE_URL = "postgresql+psycopg://..."
+GITHUB_ACTIONS_TOKEN = "github_pat_..."
+WORKFLOW_TRIGGER_PIN = "choose-a-private-pin"
+```
+
 ## Tests
 
 ```bash

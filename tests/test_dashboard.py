@@ -9,6 +9,7 @@ from nuclear_energy.dashboard import (
     _format_datetime,
     _format_trade_balance,
     _has_positive_amount_counts,
+    _missing_workflow_secret_names,
     _selected_country_iso_code,
     _secret_matches,
     _stage_label,
@@ -58,3 +59,13 @@ def test_secret_matches_requires_exact_pin() -> None:
     assert _secret_matches("1234", "1234") is True
     assert _secret_matches("1234", "9999") is False
     assert _secret_matches("", "1234") is False
+
+
+def test_missing_workflow_secret_names_reports_specific_missing_values() -> None:
+    assert _missing_workflow_secret_names(None, None) == [
+        "GITHUB_ACTIONS_TOKEN",
+        "WORKFLOW_TRIGGER_PIN",
+    ]
+    assert _missing_workflow_secret_names("token", None) == ["WORKFLOW_TRIGGER_PIN"]
+    assert _missing_workflow_secret_names(None, "1234") == ["GITHUB_ACTIONS_TOKEN"]
+    assert _missing_workflow_secret_names("token", "1234") == []

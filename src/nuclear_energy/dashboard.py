@@ -567,8 +567,10 @@ def _render_automation() -> None:
     selected_mode = st.radio("Workflow", list(WORKFLOW_MODES), horizontal=True)
     pin = st.text_input("PIN", type="password")
 
-    if not token or not expected_pin:
+    missing_secrets = _missing_workflow_secret_names(token, expected_pin)
+    if missing_secrets:
         st.info("Workflow trigger is not configured yet.")
+        st.caption("Missing Streamlit secrets: " + ", ".join(f"`{name}`" for name in missing_secrets))
         return
 
     if st.button("Run workflow", type="primary", use_container_width=True):
@@ -733,6 +735,15 @@ def _secret_value(name: str) -> str | None:
 
 def _secret_matches(value: str, expected: str) -> bool:
     return bool(value and expected and hmac.compare_digest(value, expected))
+
+
+def _missing_workflow_secret_names(token: str | None, expected_pin: str | None) -> list[str]:
+    missing = []
+    if not token:
+        missing.append("GITHUB_ACTIONS_TOKEN")
+    if not expected_pin:
+        missing.append("WORKFLOW_TRIGGER_PIN")
+    return missing
 
 
 def _selected_country_iso_code(selected_country: str) -> str | None:
