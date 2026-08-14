@@ -340,7 +340,7 @@ def _matched_terms(normalised_text: str, terms: tuple[str, ...]) -> list[str]:
 
 
 def _contains_term(normalised_text: str, term: str) -> bool:
-    term = _normalise_text(term)
+    term = _normalise_text(term).strip()
     if term.endswith(" "):
         return term in normalised_text
     return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", normalised_text) is not None

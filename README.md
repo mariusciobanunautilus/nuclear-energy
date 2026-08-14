@@ -15,6 +15,7 @@ The project currently has a Supabase/Postgres schema for nuclear reference data,
 - Public country electricity metrics from Ember, including nuclear generation, nuclear capacity, electricity demand, total generation, and net electricity imports/exports.
 - Rule-based public transaction detection from stored documents, linked back to source articles and regulatory records.
 - Official structured procurement feeds from USAspending.gov and EU TED, stored as transaction rows with source evidence documents.
+- Source-backed nuclear event detection for policy, licensing, construction, outage, restart, fuel-cycle, delay, and supply-risk developments.
 - Streamlit dashboard for database status, energy-system metrics, transaction signals, keyword search, and exports.
 
 ## Setup
@@ -69,6 +70,35 @@ Detect public transaction signals in stored documents.
 nuclear-energy detect-transactions --limit 500
 ```
 
+Detect broader source-backed nuclear events in stored documents.
+
+```bash
+nuclear-energy detect-events --limit 500
+```
+
+Refresh normalized event rows from stored transaction evidence.
+
+```bash
+nuclear-energy sync-events
+```
+
+Refresh entity and project links for normalized events.
+
+```bash
+nuclear-energy sync-relationships
+```
+
+The dashboard Review Queue turns normalized events into a trader-maintained source of truth. It ranks items by review urgency, shows source evidence, records confirmations, promotes important events into the Daily Tape, marks noise, links duplicates, and stores correction history instead of silently overwriting facts.
+
+Optional trader watchlists can be configured with comma-separated environment values.
+
+```toml
+WATCHLIST_ENTITIES = "Westinghouse Electric Company,Cameco,Centrus Energy,Orano"
+WATCHLIST_PROJECTS = "Cernavoda,Sizewell C,Dukovany"
+WATCHLIST_COUNTRIES = "USA,ROU,CAN,FRA"
+WATCHLIST_THEMES = "fuel_cycle,policy,project_stage"
+```
+
 7. Embed stored chunks and try semantic search.
 
 ```bash
@@ -95,6 +125,7 @@ nuclear-energy export-documents --format markdown --output exports/documents.md
 
 - `CI` runs the test suite on pushes and pull requests.
 - `Public Source Ingest` can run manually or on its daily schedule. It skips itself unless the repository has a `DATABASE_URL` secret configured for a Postgres/Supabase database, using the same `postgresql+psycopg://...` format as local development.
+- The workflow also refreshes detected events, transaction-derived events, and entity/project links. If `OPENAI_API_KEY` is configured, it embeds new chunks for semantic search; otherwise it skips embeddings and still refreshes the source-of-truth tables.
 - The Streamlit `Automation` tab can trigger `Public Source Ingest` when Streamlit secrets include:
   - `GITHUB_ACTIONS_TOKEN`: a GitHub fine-grained token for this repository with Actions read/write access.
   - `WORKFLOW_TRIGGER_PIN`: a private PIN required in the app before the workflow can be started.
@@ -103,6 +134,7 @@ Streamlit secrets example:
 
 ```toml
 DATABASE_URL = "postgresql+psycopg://..."
+OPENAI_API_KEY = "sk-proj-..."
 GITHUB_ACTIONS_TOKEN = "github_pat_..."
 WORKFLOW_TRIGGER_PIN = "choose-a-private-pin"
 ```

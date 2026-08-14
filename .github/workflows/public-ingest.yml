@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       RSS_FEEDS: https://world-nuclear-news.org/rss
       INGEST_MODE: ${{ github.event.inputs.mode || 'all' }}
 
@@ -63,6 +64,14 @@ jobs:
             nuclear-energy ingest-gdelt --limit 20 || echo "GDELT ingest skipped or rate-limited."
             nuclear-energy extract-documents --limit 30
             nuclear-energy detect-transactions --limit 500
+            nuclear-energy detect-events --limit 500
+            nuclear-energy sync-events
+            nuclear-energy sync-relationships
+            if [ -n "$OPENAI_API_KEY" ]; then
+              nuclear-energy embed-chunks --limit 250
+            else
+              echo "OPENAI_API_KEY secret is not configured; skipping embeddings."
+            fi
           fi
 
           if [ "$INGEST_MODE" = "all" ] || [ "$INGEST_MODE" = "energy" ]; then
@@ -72,4 +81,6 @@ jobs:
           if [ "$INGEST_MODE" = "all" ] || [ "$INGEST_MODE" = "official-transactions" ]; then
             nuclear-energy ingest-usaspending --limit 50 || echo "USAspending ingest skipped or unavailable."
             nuclear-energy ingest-eu-ted --limit 50 || echo "EU TED ingest skipped or unavailable."
+            nuclear-energy sync-events
+            nuclear-energy sync-relationships
           fi

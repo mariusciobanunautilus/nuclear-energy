@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,10 +14,19 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from nuclear_energy.config import get_settings
-from nuclear_energy.models import CountryEnergyYear, NuclearTransaction, RawDocument
+from nuclear_energy.models import CountryEnergyYear, NuclearEvent, NuclearTransaction, RawDocument, SourceKind
 
 
 metadata = MetaData(schema="public")
+DOCUMENT_UPSERT_PRESERVED_COLUMNS = {"id", "source_kind", "external_id", "created_at", "ingested_at"}
+SOURCE_TIER_LABELS = {
+    "tier_1_official_structured": "Tier 1 - Official Structured",
+    "tier_2_official_document": "Tier 2 - Official Document",
+    "tier_3_company_statement": "Tier 3 - Company Statement",
+    "tier_4_reported_media": "Tier 4 - Reported Media",
+    "tier_5_discovery_feed": "Tier 5 - Discovery Feed",
+    "unclassified": "Unclassified",
+}
 
 document_source_kind = ENUM(
     "rss",
@@ -227,6 +237,138 @@ class TransactionListItem:
     source_url: str
 
 
+@dataclass(frozen=True)
+class SourceHealthItem:
+    source_name: str
+    source_kind: str
+    source_tier: str
+    document_count: int
+    latest_published_at: datetime | None
+    latest_seen_at: datetime | None
+    latest_run_at: datetime | None
+    latest_run_status: str | None
+    latest_run_error: str | None
+
+
+@dataclass(frozen=True)
+class EventMetrics:
+    event_count: int
+    official_event_count: int
+    needs_review_count: int
+    important_count: int
+    duplicate_count: int
+    corrected_count: int
+    latest_event_date: datetime | None
+
+
+@dataclass(frozen=True)
+class EventListItem:
+    id: str
+    event_date: datetime | None
+    event_type: str
+    event_status: str
+    review_status: str
+    source_tier: str
+    country_iso_code: str | None
+    country_name: str | None
+    project_name: str | None
+    title: str
+    summary: str
+    amount_text: str | None
+    materiality_flags: list[str]
+    themes: list[str]
+    source_confidence: float
+    evidence_count: int
+    source_name: str | None
+    source_url: str | None
+
+
+@dataclass(frozen=True)
+class ReviewQueueItem:
+    id: str
+    event_date: datetime | None
+    event_type: str
+    event_status: str
+    review_status: str
+    source_tier: str
+    country_iso_code: str | None
+    country_name: str | None
+    project_name: str | None
+    title: str
+    summary: str
+    amount_text: str | None
+    materiality_flags: list[str]
+    themes: list[str]
+    source_confidence: float
+    evidence_count: int
+    source_name: str | None
+    source_url: str | None
+    review_note: str | None
+    duplicate_of_event_id: str | None
+    review_priority: int
+    review_reasons: list[str]
+
+
+@dataclass(frozen=True)
+class ReviewMetrics:
+    queue_count: int
+    important_count: int
+    corrected_count: int
+    duplicate_count: int
+    low_confidence_count: int
+    official_unreviewed_count: int
+
+
+@dataclass(frozen=True)
+class EventEvidenceItem:
+    id: str
+    event_id: str
+    document_id: str | None
+    evidence_kind: str
+    source_name: str
+    source_url: str
+    source_tier: str
+    published_at: datetime | None
+    snippet: str
+
+
+@dataclass(frozen=True)
+class ReviewHistoryItem:
+    id: str
+    event_id: str
+    review_status: str
+    previous_status: str | None
+    review_action: str
+    duplicate_of_event_id: str | None
+    patch_payload: dict
+    note: str | None
+    reviewer: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class EntitySummary:
+    id: str
+    canonical_name: str
+    entity_type: str
+    country_iso_code: str | None
+    event_count: int
+    latest_event_date: datetime | None
+    roles: list[str]
+
+
+@dataclass(frozen=True)
+class ProjectSummary:
+    id: str
+    canonical_name: str
+    project_type: str
+    country_iso_code: str | None
+    country_name: str | None
+    event_count: int
+    latest_event_date: datetime | None
+    event_types: list[str]
+
+
 ingested_documents = Table(
     "ingested_documents",
     metadata,
@@ -244,6 +386,9 @@ ingested_documents = Table(
     Column("authors", JSON, nullable=False),
     Column("tags", JSON, nullable=False),
     Column("raw_payload", JSON, nullable=False),
+    Column("source_tier", Text, nullable=False),
+    Column("ingested_at", DateTime(timezone=True), nullable=False),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("source_kind", "external_id", name="ingested_documents_source_external_unique"),
@@ -341,6 +486,9 @@ def upsert_documents(documents: Iterable[RawDocument]) -> int:
                 "authors": document.authors,
                 "tags": document.tags,
                 "raw_payload": payload,
+                "source_tier": source_tier_for_kind(document.source_kind.value),
+                "ingested_at": now,
+                "last_seen_at": now,
                 "updated_at": now,
             }
         )
@@ -349,11 +497,7 @@ def upsert_documents(documents: Iterable[RawDocument]) -> int:
         return 0
 
     statement = insert(ingested_documents).values(rows)
-    update_columns = {
-        column.name: getattr(statement.excluded, column.name)
-        for column in ingested_documents.c
-        if column.name not in {"source_kind", "external_id"}
-    }
+    update_columns = _document_upsert_update_columns(statement)
 
     with Session(get_engine()) as session:
         session.execute(
@@ -365,6 +509,89 @@ def upsert_documents(documents: Iterable[RawDocument]) -> int:
         session.commit()
 
     return len(rows)
+
+
+def _document_upsert_update_columns(statement) -> dict[str, object]:
+    return {
+        column.name: getattr(statement.excluded, column.name)
+        for column in ingested_documents.c
+        if column.name not in DOCUMENT_UPSERT_PRESERVED_COLUMNS
+    }
+
+
+def source_tier_for_kind(source_kind: str | SourceKind) -> str:
+    kind = source_kind.value if isinstance(source_kind, SourceKind) else str(source_kind)
+    if kind in {"usaspending", "eu_ted"}:
+        return "tier_1_official_structured"
+    if kind in {"eur_lex", "federal_register", "congress", "regulations_gov", "iaea_pris", "eia", "entsoe"}:
+        return "tier_2_official_document"
+    if kind == "rss":
+        return "tier_4_reported_media"
+    if kind == "gdelt":
+        return "tier_5_discovery_feed"
+    return "unclassified"
+
+
+def source_tier_label(source_tier: str | None) -> str:
+    return SOURCE_TIER_LABELS.get(source_tier or "unclassified", SOURCE_TIER_LABELS["unclassified"])
+
+
+def record_ingestion_run(
+    *,
+    source_kind: str | SourceKind,
+    source_name: str,
+    status: str,
+    documents_seen: int = 0,
+    documents_stored: int = 0,
+    error_message: str | None = None,
+) -> None:
+    now = datetime.now(timezone.utc)
+    kind = source_kind.value if isinstance(source_kind, SourceKind) else str(source_kind)
+    statement = sql_text(
+        """
+        insert into public.ingestion_runs (
+          source_kind,
+          source_name,
+          source_tier,
+          started_at,
+          finished_at,
+          status,
+          documents_seen,
+          documents_stored,
+          error_message,
+          updated_at
+        )
+        values (
+          cast(:source_kind as public.document_source_kind),
+          :source_name,
+          :source_tier,
+          :started_at,
+          :finished_at,
+          :status,
+          :documents_seen,
+          :documents_stored,
+          :error_message,
+          :updated_at
+        )
+        """
+    )
+    with Session(get_engine()) as session:
+        session.execute(
+            statement,
+            {
+                "source_kind": kind,
+                "source_name": source_name,
+                "source_tier": source_tier_for_kind(kind),
+                "started_at": now,
+                "finished_at": now,
+                "status": status,
+                "documents_seen": max(0, documents_seen),
+                "documents_stored": max(0, documents_stored),
+                "error_message": error_message,
+                "updated_at": now,
+            },
+        )
+        session.commit()
 
 
 def upsert_country_energy_years(records: Iterable[CountryEnergyYear]) -> int:
@@ -464,6 +691,798 @@ def upsert_nuclear_transactions(transactions: Iterable[NuclearTransaction]) -> i
         session.commit()
 
     return len(rows)
+
+
+def sync_events_from_transactions(limit: int | None = None) -> int:
+    params: dict[str, object] = {"limit": limit}
+    limit_clause = "limit :limit" if limit and limit > 0 else ""
+    statement = sql_text(
+        f"""
+        with transaction_rows as (
+          select *
+          from public.nuclear_transactions
+          order by transaction_date desc nulls last, created_at desc
+          {limit_clause}
+        ),
+        event_rows as (
+          select
+            t.id as transaction_id,
+            'transaction-' || t.external_id as external_id,
+            t.document_id as source_document_id,
+            case
+              when t.stage = 'public_tender' then 'public_tender'
+              when t.transaction_type = 'merger_acquisition' then 'm_and_a'
+              else t.transaction_type
+            end as event_type,
+            case
+              when t.stage = 'confirmed_award' then 'confirmed'
+              when t.stage = 'public_tender' then 'public_tender'
+              when t.stage in ('company_announcement', 'regulatory_filing', 'news_reported') then 'reported'
+              else 'detected'
+            end as event_status,
+            case
+              when d.source_tier is not null then d.source_tier
+              when t.source_name in ('USAspending.gov', 'EU TED') then 'tier_1_official_structured'
+              when t.source_name in ('EUR-Lex', 'Federal Register') then 'tier_2_official_document'
+              else 'unclassified'
+            end as source_tier,
+            coalesce(t.transaction_date, t.created_at) as event_date,
+            t.country_iso_code,
+            t.country_name,
+            coalesce(t.project_name, t.plant_name) as project_name,
+            t.title,
+            t.summary,
+            t.amount,
+            t.amount_text,
+            t.currency,
+            jsonb_strip_nulls(jsonb_build_object(
+              'large_public_value', case when t.amount >= 50000000 then true end,
+              'official_confirmation', case when t.stage in ('confirmed_award', 'public_tender') then true end,
+              'public_amount', case when t.amount_text is not null then true end,
+              'fuel_cycle_relevance', case when t.transaction_type = 'fuel_supply' then true end,
+              'project_stage_change', case when t.stage in ('confirmed_award', 'public_tender') then true end
+            )) as flags_object,
+            jsonb_strip_nulls(jsonb_build_object(
+              'fuel_cycle', case when t.transaction_type = 'fuel_supply' then true end,
+              'procurement', case when t.transaction_type in ('contract_award', 'construction_refurbishment') then true end,
+              'financing', case when t.transaction_type = 'financing' then true end,
+              'm_and_a', case when t.transaction_type = 'merger_acquisition' then true end
+            )) as themes_object,
+            t.confidence as source_confidence,
+            to_jsonb(t) as raw_payload
+          from transaction_rows as t
+          left join public.ingested_documents as d
+            on d.id = t.document_id
+        ),
+        upserted_events as (
+          insert into public.nuclear_events (
+            external_id,
+            source_document_id,
+            event_type,
+            event_status,
+            source_tier,
+            event_date,
+            country_iso_code,
+            country_name,
+            project_name,
+            title,
+            summary,
+            amount,
+            amount_text,
+            currency,
+            materiality_flags,
+            themes,
+            source_confidence,
+            raw_payload,
+            last_seen_at,
+            updated_at
+          )
+          select
+            external_id,
+            source_document_id,
+            event_type,
+            event_status,
+            source_tier,
+            event_date,
+            country_iso_code,
+            country_name,
+            project_name,
+            title,
+            summary,
+            amount,
+            amount_text,
+            currency,
+            coalesce((select jsonb_agg(key order by key) from jsonb_each(flags_object) where value = 'true'::jsonb), '[]'::jsonb),
+            coalesce((select jsonb_agg(key order by key) from jsonb_each(themes_object) where value = 'true'::jsonb), '[]'::jsonb),
+            source_confidence,
+            raw_payload,
+            now(),
+            now()
+          from event_rows
+          on conflict (external_id) do update
+          set
+            source_document_id = excluded.source_document_id,
+            event_type = excluded.event_type,
+            event_status = excluded.event_status,
+            source_tier = excluded.source_tier,
+            event_date = excluded.event_date,
+            country_iso_code = excluded.country_iso_code,
+            country_name = excluded.country_name,
+            project_name = excluded.project_name,
+            title = excluded.title,
+            summary = excluded.summary,
+            amount = excluded.amount,
+            amount_text = excluded.amount_text,
+            currency = excluded.currency,
+            materiality_flags = excluded.materiality_flags,
+            themes = excluded.themes,
+            source_confidence = excluded.source_confidence,
+            raw_payload = excluded.raw_payload,
+            last_seen_at = now(),
+            updated_at = now()
+          returning id, external_id, source_document_id, source_tier, event_date, summary, raw_payload
+        ),
+        entity_candidates as (
+          select distinct
+            btrim(value) as canonical_name,
+            'unknown' as entity_type,
+            null::text as country_iso_code,
+            'mentioned' as role
+          from upserted_events e
+          cross join lateral jsonb_array_elements_text(e.raw_payload -> 'counterparties') as value
+          where btrim(value) <> ''
+          union
+          select distinct
+            btrim(e.raw_payload -> 'raw_payload' ->> 'Recipient Name') as canonical_name,
+            'company' as entity_type,
+            null::text as country_iso_code,
+            'recipient' as role
+          from upserted_events e
+          where btrim(coalesce(e.raw_payload -> 'raw_payload' ->> 'Recipient Name', '')) <> ''
+          union
+          select distinct
+            btrim(agency_name) as canonical_name,
+            'government_agency' as entity_type,
+            null::text as country_iso_code,
+            'awarding_agency' as role
+          from upserted_events e
+          cross join lateral (
+            values
+              (e.raw_payload -> 'raw_payload' ->> 'Awarding Agency'),
+              (e.raw_payload -> 'raw_payload' ->> 'Awarding Sub Agency'),
+              (e.raw_payload -> 'raw_payload' ->> 'Funding Agency'),
+              (e.raw_payload -> 'raw_payload' ->> 'Funding Sub Agency')
+          ) agency(agency_name)
+          where btrim(coalesce(agency_name, '')) <> ''
+        ),
+        inserted_entities as (
+          insert into public.entities (canonical_name, entity_type, country_iso_code, source_tier, raw_payload)
+          select distinct
+            canonical_name,
+            entity_type,
+            country_iso_code,
+            'unclassified',
+            jsonb_build_object('source', 'transaction_counterparty')
+          from entity_candidates
+          on conflict (canonical_name) do update
+          set
+            entity_type = case
+              when public.entities.entity_type = 'unknown' then excluded.entity_type
+              else public.entities.entity_type
+            end,
+            country_iso_code = coalesce(public.entities.country_iso_code, excluded.country_iso_code),
+            updated_at = now()
+          returning id, canonical_name
+        ),
+        inserted_entity_aliases as (
+          insert into public.entity_aliases (entity_id, alias)
+          select id, canonical_name
+          from inserted_entities
+          on conflict do nothing
+        ),
+        inserted_event_entities as (
+          insert into public.event_entities (event_id, entity_id, role)
+          select distinct e.id, entities.id, entity_candidates.role
+          from upserted_events e
+          join entity_candidates
+            on true
+          join public.entities
+            on entities.canonical_name = entity_candidates.canonical_name
+          where (
+            entity_candidates.canonical_name in (
+              select btrim(value)
+              from jsonb_array_elements_text(e.raw_payload -> 'counterparties') as value
+            )
+            or entity_candidates.canonical_name in (
+              e.raw_payload -> 'raw_payload' ->> 'Recipient Name',
+              e.raw_payload -> 'raw_payload' ->> 'Awarding Agency',
+              e.raw_payload -> 'raw_payload' ->> 'Awarding Sub Agency',
+              e.raw_payload -> 'raw_payload' ->> 'Funding Agency',
+              e.raw_payload -> 'raw_payload' ->> 'Funding Sub Agency'
+            )
+          )
+          on conflict do nothing
+        ),
+        project_names as (
+          select distinct
+            btrim(project_name) as canonical_name,
+            country_iso_code,
+            country_name
+          from public.nuclear_events
+          where project_name is not null and btrim(project_name) <> ''
+        ),
+        inserted_projects as (
+          insert into public.projects (canonical_name, project_type, country_iso_code, country_name)
+          select canonical_name, 'plant', country_iso_code, country_name
+          from project_names
+          on conflict (canonical_name, country_iso_code) do update
+          set
+            country_name = excluded.country_name,
+            updated_at = now()
+          returning id, canonical_name, country_iso_code
+        ),
+        inserted_project_aliases as (
+          insert into public.project_aliases (project_id, alias)
+          select id, canonical_name
+          from inserted_projects
+          on conflict do nothing
+        ),
+        inserted_event_projects as (
+          insert into public.event_projects (event_id, project_id, role)
+          select distinct e.id, p.id, 'plant'
+          from public.nuclear_events e
+          join public.projects p
+            on p.canonical_name = e.project_name
+            and p.country_iso_code is not distinct from e.country_iso_code
+          where e.project_name is not null
+          on conflict do nothing
+        ),
+        inserted_evidence as (
+          insert into public.event_evidence (
+            event_id,
+            document_id,
+            evidence_kind,
+            source_name,
+            source_url,
+            source_tier,
+            published_at,
+            snippet,
+            raw_payload
+          )
+          select
+            e.id,
+            e.source_document_id,
+            'transaction_summary',
+            coalesce(e.raw_payload ->> 'source_name', 'Unknown source'),
+            coalesce(e.raw_payload ->> 'source_url', 'https://example.invalid'),
+            e.source_tier,
+            e.event_date,
+            left(e.summary, 1200),
+            e.raw_payload
+          from upserted_events e
+          where e.source_document_id is not null
+          on conflict (event_id, document_id, evidence_kind) do update
+          set
+            source_name = excluded.source_name,
+            source_url = excluded.source_url,
+            source_tier = excluded.source_tier,
+            published_at = excluded.published_at,
+            snippet = excluded.snippet,
+            raw_payload = excluded.raw_payload
+        )
+        select count(*) as event_count
+        from upserted_events
+        """
+    )
+
+    with Session(get_engine()) as session:
+        row = session.execute(statement, params).mappings().one()
+        session.commit()
+
+    return int(row["event_count"])
+
+
+def upsert_nuclear_events(events: Iterable[NuclearEvent]) -> int:
+    rows = []
+    now = datetime.now(timezone.utc)
+    for event in events:
+        rows.append(
+            {
+                "external_id": event.external_id,
+                "source_document_id": event.source_document_id,
+                "event_type": event.event_type,
+                "event_status": event.event_status,
+                "source_tier": event.source_tier,
+                "event_date": event.event_date,
+                "country_iso_code": event.country_iso_code.upper() if event.country_iso_code else None,
+                "country_name": event.country_name,
+                "project_name": event.project_name,
+                "title": event.title,
+                "summary": event.summary,
+                "amount": event.amount,
+                "amount_text": event.amount_text,
+                "currency": event.currency,
+                "materiality_flags": json.dumps(event.materiality_flags),
+                "themes": json.dumps(event.themes),
+                "source_confidence": event.source_confidence,
+                "raw_payload": json.dumps(event.raw_payload),
+                "last_seen_at": now,
+                "updated_at": now,
+            }
+        )
+
+    if not rows:
+        return 0
+
+    statement = sql_text(
+        """
+        insert into public.nuclear_events (
+          external_id,
+          source_document_id,
+          event_type,
+          event_status,
+          source_tier,
+          event_date,
+          country_iso_code,
+          country_name,
+          project_name,
+          title,
+          summary,
+          amount,
+          amount_text,
+          currency,
+          materiality_flags,
+          themes,
+          source_confidence,
+          raw_payload,
+          last_seen_at,
+          updated_at
+        )
+        values (
+          :external_id,
+          cast(:source_document_id as uuid),
+          :event_type,
+          :event_status,
+          :source_tier,
+          :event_date,
+          :country_iso_code,
+          :country_name,
+          :project_name,
+          :title,
+          :summary,
+          :amount,
+          :amount_text,
+          :currency,
+          cast(:materiality_flags as jsonb),
+          cast(:themes as jsonb),
+          :source_confidence,
+          cast(:raw_payload as jsonb),
+          :last_seen_at,
+          :updated_at
+        )
+        on conflict (external_id) do update
+        set
+          source_document_id = excluded.source_document_id,
+          event_type = excluded.event_type,
+          event_status = excluded.event_status,
+          source_tier = excluded.source_tier,
+          event_date = excluded.event_date,
+          country_iso_code = excluded.country_iso_code,
+          country_name = excluded.country_name,
+          project_name = excluded.project_name,
+          title = excluded.title,
+          summary = excluded.summary,
+          amount = excluded.amount,
+          amount_text = excluded.amount_text,
+          currency = excluded.currency,
+          materiality_flags = excluded.materiality_flags,
+          themes = excluded.themes,
+          source_confidence = excluded.source_confidence,
+          raw_payload = excluded.raw_payload,
+          last_seen_at = excluded.last_seen_at,
+          updated_at = excluded.updated_at
+        returning id, external_id
+        """
+    )
+    evidence_statement = sql_text(
+        """
+        insert into public.event_evidence (
+          event_id,
+          document_id,
+          evidence_kind,
+          source_name,
+          source_url,
+          source_tier,
+          published_at,
+          snippet,
+          raw_payload
+        )
+        values (
+          cast(:event_id as uuid),
+          cast(:document_id as uuid),
+          'source_excerpt',
+          :source_name,
+          :source_url,
+          :source_tier,
+          :published_at,
+          :snippet,
+          cast(:raw_payload as jsonb)
+        )
+        on conflict (event_id, document_id, evidence_kind) do update
+        set
+          source_name = excluded.source_name,
+          source_url = excluded.source_url,
+          source_tier = excluded.source_tier,
+          published_at = excluded.published_at,
+          snippet = excluded.snippet,
+          raw_payload = excluded.raw_payload
+        """
+    )
+
+    by_external_id = {event.external_id: event for event in events}
+    with Session(get_engine()) as session:
+        event_ids: dict[str, str] = {}
+        for row in rows:
+            stored = session.execute(statement, row).mappings().one()
+            event_ids[str(stored["external_id"])] = str(stored["id"])
+        for external_id, event_id in event_ids.items():
+            event = by_external_id[external_id]
+            session.execute(
+                evidence_statement,
+                {
+                    "event_id": event_id,
+                    "document_id": event.source_document_id,
+                    "source_name": event.source_name,
+                    "source_url": event.source_url,
+                    "source_tier": event.source_tier,
+                    "published_at": event.event_date,
+                    "snippet": event.evidence_snippet,
+                    "raw_payload": json.dumps(event.raw_payload),
+                },
+            )
+            _upsert_event_relationships(session, event_id, event)
+        session.commit()
+
+    return len(rows)
+
+
+def sync_event_relationships(limit: int | None = None) -> int:
+    params: dict[str, object] = {"limit": limit}
+    limit_clause = "limit :limit" if limit and limit > 0 else ""
+    statement = sql_text(
+        f"""
+        with target_events as (
+          select *
+          from public.nuclear_events
+          order by event_date desc nulls last, created_at desc
+          {limit_clause}
+        ),
+        matched_entities as (
+          select distinct
+            e.id as event_id,
+            btrim(entity.canonical_name) as canonical_name,
+            coalesce(nullif(entity.entity_type, ''), 'unknown') as entity_type,
+            nullif(entity.country_iso_code, '') as country_iso_code,
+            'mentioned' as role,
+            coalesce(entity.matched_aliases, '') as matched_aliases,
+            e.source_tier
+          from target_events e
+          cross join lateral jsonb_to_recordset(coalesce(e.raw_payload -> 'matched_entities', '[]'::jsonb))
+            as entity(canonical_name text, entity_type text, country_iso_code text, matched_aliases text)
+          where btrim(coalesce(entity.canonical_name, '')) <> ''
+        ),
+        counterparty_entities as (
+          select distinct
+            e.id as event_id,
+            btrim(value) as canonical_name,
+            'unknown' as entity_type,
+            null::text as country_iso_code,
+            'mentioned' as role,
+            btrim(value) as matched_aliases,
+            e.source_tier
+          from target_events e
+          cross join lateral jsonb_array_elements_text(coalesce(e.raw_payload -> 'counterparties', '[]'::jsonb)) as value
+          where btrim(value) <> ''
+        ),
+        official_entities as (
+          select distinct
+            e.id as event_id,
+            btrim(candidate.name) as canonical_name,
+            candidate.entity_type,
+            null::text as country_iso_code,
+            candidate.role,
+            btrim(candidate.name) as matched_aliases,
+            e.source_tier
+          from target_events e
+          cross join lateral (
+            values
+              (e.raw_payload -> 'raw_payload' ->> 'Recipient Name', 'company', 'recipient'),
+              (e.raw_payload -> 'raw_payload' ->> 'Awarding Agency', 'government_agency', 'awarding_agency'),
+              (e.raw_payload -> 'raw_payload' ->> 'Awarding Sub Agency', 'government_agency', 'awarding_agency'),
+              (e.raw_payload -> 'raw_payload' ->> 'Funding Agency', 'government_agency', 'awarding_agency'),
+              (e.raw_payload -> 'raw_payload' ->> 'Funding Sub Agency', 'government_agency', 'awarding_agency')
+          ) candidate(name, entity_type, role)
+          where btrim(coalesce(candidate.name, '')) <> ''
+        ),
+        entity_candidates as (
+          select * from matched_entities
+          union
+          select * from counterparty_entities
+          union
+          select * from official_entities
+        ),
+        upserted_entities as (
+          insert into public.entities (canonical_name, entity_type, country_iso_code, source_tier, raw_payload)
+          select distinct
+            canonical_name,
+            entity_type,
+            country_iso_code,
+            source_tier,
+            jsonb_build_object('source', 'relationship_sync')
+          from entity_candidates
+          on conflict (canonical_name) do update
+          set
+            entity_type = case
+              when public.entities.entity_type = 'unknown' then excluded.entity_type
+              else public.entities.entity_type
+            end,
+            country_iso_code = coalesce(public.entities.country_iso_code, excluded.country_iso_code),
+            source_tier = case
+              when public.entities.source_tier = 'unclassified' then excluded.source_tier
+              else public.entities.source_tier
+            end,
+            updated_at = now()
+          returning id, canonical_name
+        ),
+        inserted_aliases as (
+          insert into public.entity_aliases (entity_id, alias)
+          select distinct entities.id, btrim(alias_value)
+          from entity_candidates
+          join public.entities
+            on entities.canonical_name = entity_candidates.canonical_name
+          cross join lateral unnest(
+            array_append(string_to_array(entity_candidates.matched_aliases, ','), entity_candidates.canonical_name)
+          ) alias(alias_value)
+          where btrim(alias_value) <> ''
+          on conflict do nothing
+        ),
+        inserted_event_entities as (
+          insert into public.event_entities (event_id, entity_id, role)
+          select distinct entity_candidates.event_id, entities.id, entity_candidates.role
+          from entity_candidates
+          join public.entities
+            on entities.canonical_name = entity_candidates.canonical_name
+          on conflict do nothing
+        ),
+        project_candidates as (
+          select distinct
+            id as event_id,
+            btrim(project_name) as canonical_name,
+            case
+              when event_type in ('fuel_supply', 'sanction_or_export_control') then 'fuel_facility'
+              when event_type in ('construction_refurbishment', 'life_extension') then 'life_extension'
+              else 'plant'
+            end as project_type,
+            country_iso_code,
+            country_name,
+            case
+              when event_type in ('license_application', 'license_approval') then 'license_target'
+              when event_type = 'fuel_supply' then 'facility'
+              else 'plant'
+            end as role
+          from target_events
+          where project_name is not null and btrim(project_name) <> ''
+        ),
+        upserted_projects as (
+          insert into public.projects (canonical_name, project_type, country_iso_code, country_name)
+          select canonical_name, project_type, country_iso_code, country_name
+          from project_candidates
+          on conflict (canonical_name, country_iso_code) do update
+          set
+            project_type = case
+              when public.projects.project_type = 'unknown' then excluded.project_type
+              else public.projects.project_type
+            end,
+            country_name = coalesce(public.projects.country_name, excluded.country_name),
+            updated_at = now()
+          returning id, canonical_name, country_iso_code
+        ),
+        inserted_project_aliases as (
+          insert into public.project_aliases (project_id, alias)
+          select distinct projects.id, project_candidates.canonical_name
+          from project_candidates
+          join public.projects
+            on projects.canonical_name = project_candidates.canonical_name
+            and projects.country_iso_code is not distinct from project_candidates.country_iso_code
+          on conflict do nothing
+        ),
+        inserted_event_projects as (
+          insert into public.event_projects (event_id, project_id, role)
+          select distinct project_candidates.event_id, projects.id, project_candidates.role
+          from project_candidates
+          join public.projects
+            on projects.canonical_name = project_candidates.canonical_name
+            and projects.country_iso_code is not distinct from project_candidates.country_iso_code
+          on conflict do nothing
+        )
+        select count(*) as event_count from target_events
+        """
+    )
+    with Session(get_engine()) as session:
+        row = session.execute(statement, params).mappings().one()
+        session.commit()
+    return int(row["event_count"])
+
+
+def _upsert_event_relationships(session: Session, event_id: str, event: NuclearEvent) -> None:
+    for entity in event.raw_payload.get("matched_entities", []):
+        canonical_name = str(entity.get("canonical_name") or "").strip()
+        if not canonical_name:
+            continue
+        entity_id = _upsert_entity(
+            session,
+            canonical_name=canonical_name,
+            entity_type=str(entity.get("entity_type") or "unknown"),
+            country_iso_code=entity.get("country_iso_code"),
+            source_tier=event.source_tier,
+            raw_payload={"source": "document_entity_match", "matched_aliases": entity.get("matched_aliases")},
+        )
+        session.execute(
+            sql_text(
+                """
+                insert into public.event_entities (event_id, entity_id, role)
+                values (cast(:event_id as uuid), cast(:entity_id as uuid), 'mentioned')
+                on conflict do nothing
+                """
+            ),
+            {"event_id": event_id, "entity_id": entity_id},
+        )
+        for alias in str(entity.get("matched_aliases") or "").split(","):
+            alias = alias.strip()
+            if alias:
+                _upsert_entity_alias(session, entity_id=entity_id, alias=alias)
+
+    if event.project_name:
+        project_id = _upsert_project(
+            session,
+            canonical_name=event.project_name,
+            project_type=_project_type_for_event(event.event_type),
+            country_iso_code=event.country_iso_code,
+            country_name=event.country_name,
+        )
+        session.execute(
+            sql_text(
+                """
+                insert into public.event_projects (event_id, project_id, role)
+                values (cast(:event_id as uuid), cast(:project_id as uuid), :role)
+                on conflict do nothing
+                """
+            ),
+            {
+                "event_id": event_id,
+                "project_id": project_id,
+                "role": _project_role_for_event(event.event_type),
+            },
+        )
+        _upsert_project_alias(session, project_id=project_id, alias=event.project_name)
+
+
+def _upsert_entity(
+    session: Session,
+    *,
+    canonical_name: str,
+    entity_type: str,
+    country_iso_code: str | None,
+    source_tier: str,
+    raw_payload: dict,
+) -> str:
+    row = session.execute(
+        sql_text(
+            """
+            insert into public.entities (canonical_name, entity_type, country_iso_code, source_tier, raw_payload)
+            values (:canonical_name, :entity_type, :country_iso_code, :source_tier, cast(:raw_payload as jsonb))
+            on conflict (canonical_name) do update
+            set
+              entity_type = case
+                when public.entities.entity_type = 'unknown' then excluded.entity_type
+                else public.entities.entity_type
+              end,
+              country_iso_code = coalesce(public.entities.country_iso_code, excluded.country_iso_code),
+              source_tier = case
+                when public.entities.source_tier = 'unclassified' then excluded.source_tier
+                else public.entities.source_tier
+              end,
+              updated_at = now()
+            returning id
+            """
+        ),
+        {
+            "canonical_name": canonical_name,
+            "entity_type": entity_type,
+            "country_iso_code": country_iso_code,
+            "source_tier": source_tier,
+            "raw_payload": json.dumps(raw_payload),
+        },
+    ).mappings().one()
+    entity_id = str(row["id"])
+    _upsert_entity_alias(session, entity_id=entity_id, alias=canonical_name)
+    return entity_id
+
+
+def _upsert_entity_alias(session: Session, *, entity_id: str, alias: str) -> None:
+    session.execute(
+        sql_text(
+            """
+            insert into public.entity_aliases (entity_id, alias)
+            values (cast(:entity_id as uuid), :alias)
+            on conflict do nothing
+            """
+        ),
+        {"entity_id": entity_id, "alias": alias},
+    )
+
+
+def _upsert_project(
+    session: Session,
+    *,
+    canonical_name: str,
+    project_type: str,
+    country_iso_code: str | None,
+    country_name: str | None,
+) -> str:
+    row = session.execute(
+        sql_text(
+            """
+            insert into public.projects (canonical_name, project_type, country_iso_code, country_name)
+            values (:canonical_name, :project_type, :country_iso_code, :country_name)
+            on conflict (canonical_name, country_iso_code) do update
+            set
+              project_type = case
+                when public.projects.project_type = 'unknown' then excluded.project_type
+                else public.projects.project_type
+              end,
+              country_name = coalesce(public.projects.country_name, excluded.country_name),
+              updated_at = now()
+            returning id
+            """
+        ),
+        {
+            "canonical_name": canonical_name,
+            "project_type": project_type,
+            "country_iso_code": country_iso_code,
+            "country_name": country_name,
+        },
+    ).mappings().one()
+    return str(row["id"])
+
+
+def _upsert_project_alias(session: Session, *, project_id: str, alias: str) -> None:
+    session.execute(
+        sql_text(
+            """
+            insert into public.project_aliases (project_id, alias)
+            values (cast(:project_id as uuid), :alias)
+            on conflict do nothing
+            """
+        ),
+        {"project_id": project_id, "alias": alias},
+    )
+
+
+def _project_type_for_event(event_type: str) -> str:
+    if event_type in {"fuel_supply", "sanction_or_export_control"}:
+        return "fuel_facility"
+    if event_type in {"construction_refurbishment", "life_extension"}:
+        return "life_extension"
+    return "plant"
+
+
+def _project_role_for_event(event_type: str) -> str:
+    if event_type in {"license_application", "license_approval"}:
+        return "license_target"
+    if event_type == "fuel_supply":
+        return "facility"
+    return "plant"
 
 
 def fetch_document_id_map(document_keys: Iterable[tuple[str, str]]) -> dict[tuple[str, str], str]:
@@ -671,6 +1690,74 @@ def fetch_source_summaries() -> list[SourceSummary]:
     ]
 
 
+def fetch_source_health() -> list[SourceHealthItem]:
+    statement = sql_text(
+        """
+        with latest_runs as (
+          select *
+          from (
+            select
+              r.source_kind::text as source_kind,
+              r.source_name,
+              r.source_tier,
+              r.finished_at,
+              r.status,
+              r.error_message,
+              row_number() over (
+                partition by r.source_kind, coalesce(r.source_name, '')
+                order by r.finished_at desc nulls last, r.started_at desc
+              ) as rank
+            from public.ingestion_runs as r
+          ) ranked
+          where rank = 1
+        )
+        select
+          d.source_name,
+          d.source_kind::text as source_kind,
+          coalesce(max(d.source_tier), latest_runs.source_tier, 'unclassified') as source_tier,
+          count(*) as document_count,
+          max(d.published_at) as latest_published_at,
+          max(d.last_seen_at) as latest_seen_at,
+          latest_runs.finished_at as latest_run_at,
+          latest_runs.status as latest_run_status,
+          latest_runs.error_message as latest_run_error
+        from public.ingested_documents as d
+        left join latest_runs
+          on latest_runs.source_kind = d.source_kind::text
+          and coalesce(latest_runs.source_name, '') = coalesce(d.source_name, '')
+        group by
+          d.source_name,
+          d.source_kind,
+          latest_runs.source_tier,
+          latest_runs.finished_at,
+          latest_runs.status,
+          latest_runs.error_message
+        order by
+          max(d.last_seen_at) desc nulls last,
+          count(*) desc,
+          d.source_name
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement).mappings().all()
+
+    return [
+        SourceHealthItem(
+            source_name=row["source_name"],
+            source_kind=row["source_kind"],
+            source_tier=row["source_tier"],
+            document_count=int(row["document_count"]),
+            latest_published_at=row["latest_published_at"],
+            latest_seen_at=row["latest_seen_at"],
+            latest_run_at=row["latest_run_at"],
+            latest_run_status=row["latest_run_status"],
+            latest_run_error=row["latest_run_error"],
+        )
+        for row in rows
+    ]
+
+
 def fetch_recent_documents(
     *,
     limit: int = 25,
@@ -744,6 +1831,56 @@ def fetch_documents_for_transaction_detection(
         return []
 
     conditions = ["d.source_kind::text not in ('usaspending', 'eu_ted')"]
+    params: dict[str, object] = {"limit": limit}
+    if source_name:
+        conditions.append("d.source_name = :source_name")
+        params["source_name"] = source_name
+
+    statement = sql_text(
+        f"""
+        select
+          d.id,
+          d.title,
+          d.url,
+          d.source_name,
+          d.source_kind::text as source_kind,
+          d.published_at,
+          d.summary,
+          d.content
+        from public.ingested_documents as d
+        {_where_clause(conditions)}
+        order by d.published_at desc nulls last, d.created_at desc
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        TransactionDetectionDocument(
+            id=str(row["id"]),
+            title=row["title"],
+            url=row["url"],
+            source_name=row["source_name"],
+            source_kind=row["source_kind"],
+            published_at=row["published_at"],
+            summary=row["summary"],
+            content=row["content"],
+        )
+        for row in rows
+    ]
+
+
+def fetch_documents_for_event_detection(
+    *,
+    limit: int = 500,
+    source_name: Optional[str] = None,
+) -> list[TransactionDetectionDocument]:
+    if limit < 1:
+        return []
+
+    conditions = []
     params: dict[str, object] = {"limit": limit}
     if source_name:
         conditions.append("d.source_name = :source_name")
@@ -1249,6 +2386,772 @@ def fetch_recent_transactions(
     ]
 
 
+def fetch_event_metrics() -> EventMetrics:
+    statement = sql_text(
+        """
+        select
+          count(*) as event_count,
+          count(*) filter (
+            where source_tier in ('tier_1_official_structured', 'tier_2_official_document')
+          ) as official_event_count,
+          count(*) filter (where review_status = 'unreviewed') as needs_review_count,
+          count(*) filter (where review_status = 'important') as important_count,
+          count(*) filter (where review_status = 'duplicate') as duplicate_count,
+          count(*) filter (where review_status = 'corrected') as corrected_count,
+          max(event_date) as latest_event_date
+        from public.nuclear_events
+        """
+    )
+
+    with Session(get_engine()) as session:
+        row = session.execute(statement).mappings().one()
+
+    return EventMetrics(
+        event_count=int(row["event_count"]),
+        official_event_count=int(row["official_event_count"]),
+        needs_review_count=int(row["needs_review_count"]),
+        important_count=int(row["important_count"]),
+        duplicate_count=int(row["duplicate_count"]),
+        corrected_count=int(row["corrected_count"]),
+        latest_event_date=row["latest_event_date"],
+    )
+
+
+def fetch_recent_events(
+    *,
+    limit: int = 50,
+    country_iso_code: Optional[str] = None,
+    review_status: Optional[str] = None,
+    official_only: bool = False,
+    since: datetime | None = None,
+    themes: Sequence[str] = (),
+    materiality_flags: Sequence[str] = (),
+    needs_review: bool = False,
+) -> list[EventListItem]:
+    if limit < 1:
+        return []
+
+    conditions = []
+    params: dict[str, object] = {"limit": limit}
+    if country_iso_code:
+        conditions.append("e.country_iso_code = :country_iso_code")
+        params["country_iso_code"] = country_iso_code.strip().upper()
+    if review_status:
+        conditions.append("e.review_status = :review_status")
+        params["review_status"] = review_status
+    if official_only:
+        conditions.append("e.source_tier in ('tier_1_official_structured', 'tier_2_official_document')")
+    if since:
+        conditions.append("coalesce(e.event_date, e.first_seen_at, e.created_at) >= :since")
+        params["since"] = since
+    _add_json_array_overlap_condition(conditions, params, "e.themes", themes, "theme")
+    _add_json_array_overlap_condition(conditions, params, "e.materiality_flags", materiality_flags, "flag")
+    if needs_review:
+        conditions.append(
+            """
+            (
+              e.review_status = 'unreviewed'
+            )
+            """
+        )
+
+    statement = sql_text(
+        f"""
+        with evidence_counts as (
+          select
+            event_id,
+            count(*) as evidence_count,
+            min(source_name) as source_name,
+            min(source_url) as source_url
+          from public.event_evidence
+          group by event_id
+        )
+        select
+          e.id,
+          e.event_date,
+          e.event_type,
+          e.event_status,
+          e.review_status,
+          e.source_tier,
+          e.country_iso_code,
+          e.country_name,
+          e.project_name,
+          e.title,
+          e.summary,
+          e.amount_text,
+          e.materiality_flags,
+          e.themes,
+          e.source_confidence,
+          coalesce(evidence_counts.evidence_count, 0) as evidence_count,
+          evidence_counts.source_name,
+          evidence_counts.source_url
+        from public.nuclear_events as e
+        left join evidence_counts
+          on evidence_counts.event_id = e.id
+        {_where_clause(conditions)}
+        order by e.event_date desc nulls last, e.created_at desc
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return [
+        EventListItem(
+            id=str(row["id"]),
+            event_date=row["event_date"],
+            event_type=row["event_type"],
+            event_status=row["event_status"],
+            review_status=row["review_status"],
+            source_tier=row["source_tier"],
+            country_iso_code=row["country_iso_code"],
+            country_name=row["country_name"],
+            project_name=row["project_name"],
+            title=row["title"],
+            summary=row["summary"],
+            amount_text=row["amount_text"],
+            materiality_flags=_json_text_list(row["materiality_flags"]),
+            themes=_json_text_list(row["themes"]),
+            source_confidence=float(row["source_confidence"]),
+            evidence_count=int(row["evidence_count"]),
+            source_name=row["source_name"],
+            source_url=row["source_url"],
+        )
+        for row in rows
+    ]
+
+
+def fetch_daily_tape_events(limit: int = 25) -> list[EventListItem]:
+    return fetch_recent_events(limit=limit, official_only=True)
+
+
+def fetch_watchlist_events(
+    *,
+    limit: int = 50,
+    since: datetime | None = None,
+    entities: Sequence[str] = (),
+    projects: Sequence[str] = (),
+    countries: Sequence[str] = (),
+    themes: Sequence[str] = (),
+) -> list[EventListItem]:
+    if limit < 1:
+        return []
+
+    conditions = []
+    params: dict[str, object] = {"limit": limit}
+    if since:
+        conditions.append("coalesce(e.event_date, e.first_seen_at, e.created_at) >= :since")
+        params["since"] = since
+
+    watchlist_conditions = []
+    if countries:
+        names = []
+        for index, country in enumerate(countries):
+            key = f"watch_country_{index}"
+            params[key] = country.strip().upper()
+            names.append(f":{key}")
+        if names:
+            watchlist_conditions.append(f"e.country_iso_code in ({', '.join(names)})")
+
+    theme_conditions = _json_array_overlap_sql("e.themes", themes, "watch_theme", params)
+    if theme_conditions:
+        watchlist_conditions.append(theme_conditions)
+
+    if projects:
+        project_names = []
+        for index, project in enumerate(projects):
+            key = f"watch_project_{index}"
+            params[key] = project.strip().lower()
+            project_names.append(f":{key}")
+        if project_names:
+            watchlist_conditions.append(
+                f"""
+                (
+                  lower(coalesce(e.project_name, '')) in ({', '.join(project_names)})
+                  or exists (
+                    select 1
+                    from public.event_projects ep
+                    join public.projects p
+                      on p.id = ep.project_id
+                    left join public.project_aliases pa
+                      on pa.project_id = p.id
+                    where ep.event_id = e.id
+                      and lower(coalesce(pa.alias, p.canonical_name)) in ({', '.join(project_names)})
+                  )
+                )
+                """
+            )
+
+    if entities:
+        entity_names = []
+        for index, entity in enumerate(entities):
+            key = f"watch_entity_{index}"
+            params[key] = entity.strip().lower()
+            entity_names.append(f":{key}")
+        if entity_names:
+            watchlist_conditions.append(
+                f"""
+                exists (
+                  select 1
+                  from public.event_entities ee
+                  join public.entities en
+                    on en.id = ee.entity_id
+                  left join public.entity_aliases ea
+                    on ea.entity_id = en.id
+                  where ee.event_id = e.id
+                    and lower(coalesce(ea.alias, en.canonical_name)) in ({', '.join(entity_names)})
+                )
+                """
+            )
+
+    if not watchlist_conditions:
+        return []
+    conditions.append(f"({' or '.join(watchlist_conditions)})")
+    statement = _event_list_statement(conditions=conditions)
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+    return _event_list_items(rows)
+
+
+def fetch_entity_summaries(limit: int = 100) -> list[EntitySummary]:
+    if limit < 1:
+        return []
+    statement = sql_text(
+        """
+        select
+          entities.id,
+          entities.canonical_name,
+          entities.entity_type,
+          entities.country_iso_code,
+          count(distinct event_entities.event_id) as event_count,
+          max(nuclear_events.event_date) as latest_event_date,
+          coalesce(jsonb_agg(distinct event_entities.role) filter (where event_entities.role is not null), '[]'::jsonb) as roles
+        from public.entities
+        join public.event_entities
+          on event_entities.entity_id = entities.id
+        join public.nuclear_events
+          on nuclear_events.id = event_entities.event_id
+        group by entities.id, entities.canonical_name, entities.entity_type, entities.country_iso_code
+        order by event_count desc, latest_event_date desc nulls last, entities.canonical_name
+        limit :limit
+        """
+    )
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"limit": limit}).mappings().all()
+    return [
+        EntitySummary(
+            id=str(row["id"]),
+            canonical_name=row["canonical_name"],
+            entity_type=row["entity_type"],
+            country_iso_code=row["country_iso_code"],
+            event_count=int(row["event_count"]),
+            latest_event_date=row["latest_event_date"],
+            roles=_json_text_list(row["roles"]),
+        )
+        for row in rows
+    ]
+
+
+def fetch_project_summaries(limit: int = 100) -> list[ProjectSummary]:
+    if limit < 1:
+        return []
+    statement = sql_text(
+        """
+        select
+          projects.id,
+          projects.canonical_name,
+          projects.project_type,
+          projects.country_iso_code,
+          projects.country_name,
+          count(distinct event_projects.event_id) as event_count,
+          max(nuclear_events.event_date) as latest_event_date,
+          coalesce(jsonb_agg(distinct nuclear_events.event_type) filter (where nuclear_events.event_type is not null), '[]'::jsonb) as event_types
+        from public.projects
+        join public.event_projects
+          on event_projects.project_id = projects.id
+        join public.nuclear_events
+          on nuclear_events.id = event_projects.event_id
+        group by projects.id, projects.canonical_name, projects.project_type, projects.country_iso_code, projects.country_name
+        order by event_count desc, latest_event_date desc nulls last, projects.canonical_name
+        limit :limit
+        """
+    )
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"limit": limit}).mappings().all()
+    return [
+        ProjectSummary(
+            id=str(row["id"]),
+            canonical_name=row["canonical_name"],
+            project_type=row["project_type"],
+            country_iso_code=row["country_iso_code"],
+            country_name=row["country_name"],
+            event_count=int(row["event_count"]),
+            latest_event_date=row["latest_event_date"],
+            event_types=_json_text_list(row["event_types"]),
+        )
+        for row in rows
+    ]
+
+
+def fetch_events_for_entity(entity_id: str, *, limit: int = 50) -> list[EventListItem]:
+    if limit < 1:
+        return []
+    statement = _event_list_statement(
+        relation_join="""
+        join public.event_entities as relation
+          on relation.event_id = e.id
+        """,
+        conditions=["relation.entity_id = cast(:entity_id as uuid)"],
+    )
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"entity_id": entity_id, "limit": limit}).mappings().all()
+    return _event_list_items(rows)
+
+
+def fetch_events_for_project(project_id: str, *, limit: int = 50) -> list[EventListItem]:
+    if limit < 1:
+        return []
+    statement = _event_list_statement(
+        relation_join="""
+        join public.event_projects as relation
+          on relation.event_id = e.id
+        """,
+        conditions=["relation.project_id = cast(:project_id as uuid)"],
+    )
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"project_id": project_id, "limit": limit}).mappings().all()
+    return _event_list_items(rows)
+
+
+def _event_list_statement(*, relation_join: str = "", conditions: Sequence[str] = ()):
+    where_clause = _where_clause(conditions)
+    return sql_text(
+        f"""
+        with evidence_counts as (
+          select
+            event_id,
+            count(*) as evidence_count,
+            min(source_name) as source_name,
+            min(source_url) as source_url
+          from public.event_evidence
+          group by event_id
+        )
+        select
+          e.id,
+          e.event_date,
+          e.event_type,
+          e.event_status,
+          e.review_status,
+          e.source_tier,
+          e.country_iso_code,
+          e.country_name,
+          e.project_name,
+          e.title,
+          e.summary,
+          e.amount_text,
+          e.materiality_flags,
+          e.themes,
+          e.source_confidence,
+          coalesce(evidence_counts.evidence_count, 0) as evidence_count,
+          evidence_counts.source_name,
+          evidence_counts.source_url
+        from public.nuclear_events as e
+        {relation_join}
+        left join evidence_counts
+          on evidence_counts.event_id = e.id
+        {where_clause}
+        order by e.event_date desc nulls last, e.created_at desc
+        limit :limit
+        """
+    )
+
+
+def _event_list_items(rows) -> list[EventListItem]:
+    return [
+        EventListItem(
+            id=str(row["id"]),
+            event_date=row["event_date"],
+            event_type=row["event_type"],
+            event_status=row["event_status"],
+            review_status=row["review_status"],
+            source_tier=row["source_tier"],
+            country_iso_code=row["country_iso_code"],
+            country_name=row["country_name"],
+            project_name=row["project_name"],
+            title=row["title"],
+            summary=row["summary"],
+            amount_text=row["amount_text"],
+            materiality_flags=_json_text_list(row["materiality_flags"]),
+            themes=_json_text_list(row["themes"]),
+            source_confidence=float(row["source_confidence"]),
+            evidence_count=int(row["evidence_count"]),
+            source_name=row["source_name"],
+            source_url=row["source_url"],
+        )
+        for row in rows
+    ]
+
+
+REVIEW_STATUSES = {"reviewed", "important", "irrelevant", "duplicate", "corrected"}
+EVENT_CORRECTION_FIELDS = {
+    "event_type",
+    "event_status",
+    "event_date",
+    "country_iso_code",
+    "country_name",
+    "project_name",
+    "title",
+    "summary",
+    "amount_text",
+    "materiality_flags",
+    "themes",
+}
+
+
+def review_action_for_status(review_status: str, *, has_corrections: bool = False) -> str:
+    if has_corrections or review_status == "corrected":
+        return "correction"
+    if review_status == "important":
+        return "mark_important"
+    if review_status == "irrelevant":
+        return "mark_irrelevant"
+    if review_status == "duplicate":
+        return "mark_duplicate"
+    return "status_update"
+
+
+def fetch_review_metrics() -> ReviewMetrics:
+    statement = sql_text(
+        """
+        select
+          count(*) filter (
+            where review_status = 'unreviewed'
+          ) as queue_count,
+          count(*) filter (where review_status = 'important') as important_count,
+          count(*) filter (where review_status = 'corrected') as corrected_count,
+          count(*) filter (where review_status = 'duplicate') as duplicate_count,
+          count(*) filter (where review_status = 'unreviewed' and source_confidence < 0.7) as low_confidence_count,
+          count(*) filter (
+            where review_status = 'unreviewed'
+              and source_tier in ('tier_1_official_structured', 'tier_2_official_document')
+          ) as official_unreviewed_count
+        from public.nuclear_events
+        """
+    )
+    with Session(get_engine()) as session:
+        row = session.execute(statement).mappings().one()
+    return ReviewMetrics(
+        queue_count=int(row["queue_count"]),
+        important_count=int(row["important_count"]),
+        corrected_count=int(row["corrected_count"]),
+        duplicate_count=int(row["duplicate_count"]),
+        low_confidence_count=int(row["low_confidence_count"]),
+        official_unreviewed_count=int(row["official_unreviewed_count"]),
+    )
+
+
+def fetch_review_queue(limit: int = 50) -> list[ReviewQueueItem]:
+    if limit < 1:
+        return []
+
+    statement = sql_text(
+        """
+        with evidence_counts as (
+          select
+            event_id,
+            count(*) as evidence_count,
+            min(source_name) as source_name,
+            min(source_url) as source_url
+          from public.event_evidence
+          group by event_id
+        )
+        select
+          e.id,
+          e.event_date,
+          e.event_type,
+          e.event_status,
+          e.review_status,
+          e.source_tier,
+          e.country_iso_code,
+          e.country_name,
+          e.project_name,
+          e.title,
+          e.summary,
+          e.amount_text,
+          e.materiality_flags,
+          e.themes,
+          e.source_confidence,
+          coalesce(evidence_counts.evidence_count, 0) as evidence_count,
+          evidence_counts.source_name,
+          evidence_counts.source_url,
+          e.review_note,
+          e.duplicate_of_event_id,
+          (
+            case when e.source_tier in ('tier_1_official_structured', 'tier_2_official_document') then 40 else 0 end
+            + case when e.event_status = 'needs_review' then 30 else 0 end
+            + case when e.source_confidence < 0.7 then 25 else 0 end
+            + case when e.materiality_flags ? 'needs_review' then 20 else 0 end
+            + case when e.materiality_flags ? 'large_public_value' then 15 else 0 end
+            + case when e.materiality_flags ? 'fuel_cycle_relevance' then 12 else 0 end
+            + case when e.materiality_flags ? 'project_stage_change' then 10 else 0 end
+            + case when e.materiality_flags ? 'supply_risk' then 10 else 0 end
+          ) as review_priority,
+          jsonb_strip_nulls(jsonb_build_object(
+            'official_source', case when e.source_tier in ('tier_1_official_structured', 'tier_2_official_document') then true end,
+            'needs_review_status', case when e.event_status = 'needs_review' then true end,
+            'low_confidence', case when e.source_confidence < 0.7 then true end,
+            'needs_review_flag', case when e.materiality_flags ? 'needs_review' then true end,
+            'large_public_value', case when e.materiality_flags ? 'large_public_value' then true end,
+            'fuel_cycle_relevance', case when e.materiality_flags ? 'fuel_cycle_relevance' then true end,
+            'project_stage_change', case when e.materiality_flags ? 'project_stage_change' then true end,
+            'supply_risk', case when e.materiality_flags ? 'supply_risk' then true end
+          )) as review_reason_object
+        from public.nuclear_events as e
+        left join evidence_counts
+          on evidence_counts.event_id = e.id
+        where e.review_status = 'unreviewed'
+        order by
+          review_priority desc,
+          e.event_date desc nulls last,
+          e.created_at desc
+        limit :limit
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"limit": limit}).mappings().all()
+
+    return [
+        ReviewQueueItem(
+            id=str(row["id"]),
+            event_date=row["event_date"],
+            event_type=row["event_type"],
+            event_status=row["event_status"],
+            review_status=row["review_status"],
+            source_tier=row["source_tier"],
+            country_iso_code=row["country_iso_code"],
+            country_name=row["country_name"],
+            project_name=row["project_name"],
+            title=row["title"],
+            summary=row["summary"],
+            amount_text=row["amount_text"],
+            materiality_flags=_json_text_list(row["materiality_flags"]),
+            themes=_json_text_list(row["themes"]),
+            source_confidence=float(row["source_confidence"]),
+            evidence_count=int(row["evidence_count"]),
+            source_name=row["source_name"],
+            source_url=row["source_url"],
+            review_note=row["review_note"],
+            duplicate_of_event_id=str(row["duplicate_of_event_id"]) if row["duplicate_of_event_id"] else None,
+            review_priority=int(row["review_priority"]),
+            review_reasons=[
+                key
+                for key, value in _json_object(row["review_reason_object"]).items()
+                if value is True
+            ],
+        )
+        for row in rows
+    ]
+
+
+def fetch_event_evidence(event_id: str, *, limit: int = 10) -> list[EventEvidenceItem]:
+    if limit < 1:
+        return []
+    statement = sql_text(
+        """
+        select
+          id,
+          event_id,
+          document_id,
+          evidence_kind,
+          source_name,
+          source_url,
+          source_tier,
+          published_at,
+          snippet
+        from public.event_evidence
+        where event_id = cast(:event_id as uuid)
+        order by
+          case when source_tier in ('tier_1_official_structured', 'tier_2_official_document') then 0 else 1 end,
+          published_at desc nulls last,
+          created_at desc
+        limit :limit
+        """
+    )
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"event_id": event_id, "limit": limit}).mappings().all()
+    return [
+        EventEvidenceItem(
+            id=str(row["id"]),
+            event_id=str(row["event_id"]),
+            document_id=str(row["document_id"]) if row["document_id"] else None,
+            evidence_kind=row["evidence_kind"],
+            source_name=row["source_name"],
+            source_url=row["source_url"],
+            source_tier=row["source_tier"],
+            published_at=row["published_at"],
+            snippet=row["snippet"],
+        )
+        for row in rows
+    ]
+
+
+def fetch_review_history(event_id: str, *, limit: int = 10) -> list[ReviewHistoryItem]:
+    if limit < 1:
+        return []
+    statement = sql_text(
+        """
+        select
+          id,
+          event_id,
+          review_status,
+          previous_status,
+          review_action,
+          duplicate_of_event_id,
+          patch_payload,
+          note,
+          reviewer,
+          created_at
+        from public.event_reviews
+        where event_id = cast(:event_id as uuid)
+        order by created_at desc
+        limit :limit
+        """
+    )
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, {"event_id": event_id, "limit": limit}).mappings().all()
+    return [
+        ReviewHistoryItem(
+            id=str(row["id"]),
+            event_id=str(row["event_id"]),
+            review_status=row["review_status"],
+            previous_status=row["previous_status"],
+            review_action=row["review_action"],
+            duplicate_of_event_id=str(row["duplicate_of_event_id"]) if row["duplicate_of_event_id"] else None,
+            patch_payload=_json_object(row["patch_payload"]),
+            note=row["note"],
+            reviewer=row["reviewer"],
+            created_at=row["created_at"],
+        )
+        for row in rows
+    ]
+
+
+def update_event_review(
+    event_id: str,
+    *,
+    review_status: str,
+    note: str | None = None,
+    reviewer: str | None = None,
+    duplicate_of_event_id: str | None = None,
+    corrected_fields: dict[str, object] | None = None,
+) -> None:
+    if review_status not in REVIEW_STATUSES:
+        raise ValueError(f"Unsupported review status: {review_status}")
+
+    now = datetime.now(timezone.utc)
+    corrected_fields = {
+        key: value
+        for key, value in (corrected_fields or {}).items()
+        if key in EVENT_CORRECTION_FIELDS and value not in (None, "", [])
+    }
+    if "country_iso_code" in corrected_fields and isinstance(corrected_fields["country_iso_code"], str):
+        corrected_fields["country_iso_code"] = corrected_fields["country_iso_code"].strip().upper()
+    for json_key in ("materiality_flags", "themes"):
+        if json_key in corrected_fields:
+            corrected_fields[json_key] = [
+                str(value).strip()
+                for value in corrected_fields[json_key]  # type: ignore[index]
+                if str(value).strip()
+            ]
+
+    update_columns = [
+        "review_status = :review_status",
+        "review_note = :note",
+        "reviewed_at = :reviewed_at",
+        "duplicate_of_event_id = cast(:duplicate_of_event_id as uuid)",
+        "updated_at = :updated_at",
+    ]
+    params: dict[str, object] = {
+        "event_id": event_id,
+        "review_status": review_status,
+        "note": note,
+        "reviewed_at": now,
+        "duplicate_of_event_id": duplicate_of_event_id,
+        "updated_at": now,
+    }
+    for field, value in corrected_fields.items():
+        param_name = f"corrected_{field}"
+        if field in {"materiality_flags", "themes"}:
+            update_columns.append(f"{field} = cast(:{param_name} as jsonb)")
+            params[param_name] = json.dumps(value)
+        else:
+            update_columns.append(f"{field} = :{param_name}")
+            params[param_name] = value
+
+    review_action = review_action_for_status(review_status, has_corrections=bool(corrected_fields))
+    with Session(get_engine()) as session:
+        prior = session.execute(
+            sql_text(
+                """
+                select review_status
+                from public.nuclear_events
+                where id = cast(:event_id as uuid)
+                """
+            ),
+            {"event_id": event_id},
+        ).mappings().first()
+        previous_status = prior["review_status"] if prior else None
+        session.execute(
+            sql_text(
+                f"""
+                update public.nuclear_events
+                set {", ".join(update_columns)}
+                where id = cast(:event_id as uuid)
+                """
+            ),
+            params,
+        )
+        session.execute(
+            sql_text(
+                """
+                insert into public.event_reviews (
+                  event_id,
+                  review_status,
+                  previous_status,
+                  review_action,
+                  duplicate_of_event_id,
+                  patch_payload,
+                  note,
+                  reviewer
+                )
+                values (
+                  cast(:event_id as uuid),
+                  :review_status,
+                  :previous_status,
+                  :review_action,
+                  cast(:duplicate_of_event_id as uuid),
+                  cast(:patch_payload as jsonb),
+                  :note,
+                  :reviewer
+                )
+                """
+            ),
+            {
+                "event_id": event_id,
+                "review_status": review_status,
+                "previous_status": previous_status,
+                "review_action": review_action,
+                "duplicate_of_event_id": duplicate_of_event_id,
+                "patch_payload": json.dumps(corrected_fields),
+                "note": note,
+                "reviewer": reviewer,
+            },
+        )
+        session.commit()
+
+
 def fetch_chunks_needing_embeddings(limit: int = 25, model: str | None = None) -> list[StoredChunk]:
     if limit < 1:
         return []
@@ -1401,6 +3304,38 @@ def _where_clause(conditions: Sequence[str]) -> str:
     return f"where {' and '.join(conditions)}"
 
 
+def _add_json_array_overlap_condition(
+    conditions: list[str],
+    params: dict[str, object],
+    column_sql: str,
+    values: Sequence[str],
+    prefix: str,
+) -> None:
+    condition = _json_array_overlap_sql(column_sql, values, prefix, params)
+    if condition:
+        conditions.append(condition)
+
+
+def _json_array_overlap_sql(
+    column_sql: str,
+    values: Sequence[str],
+    prefix: str,
+    params: dict[str, object],
+) -> str:
+    cleaned_values = [value.strip() for value in values if value and value.strip()]
+    if not cleaned_values:
+        return ""
+    comparisons = []
+    for index, value in enumerate(cleaned_values):
+        key = f"{prefix}_{index}"
+        params[key] = value
+        comparisons.append(f"item.value = :{key}")
+    return (
+        f"exists (select 1 from jsonb_array_elements_text({column_sql}) as item(value) "
+        f"where {' or '.join(comparisons)})"
+    )
+
+
 def _capacity_factor_percent(nuclear_generation_twh: float | None, nuclear_capacity_gw: float | None) -> float | None:
     if nuclear_generation_twh is None or nuclear_capacity_gw is None or nuclear_capacity_gw <= 0:
         return None
@@ -1414,6 +3349,30 @@ def _optional_float(value) -> float | None:
     if not isfinite(number):
         return None
     return number
+
+
+def _json_text_list(value) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _json_object(value) -> dict:
+    if not value:
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _estimate_token_count(text: str) -> int:

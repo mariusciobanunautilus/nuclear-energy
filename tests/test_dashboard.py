@@ -7,13 +7,27 @@ import pandas as pd
 
 from nuclear_energy.dashboard import (
     _amount_color_kwargs,
+    _daily_brief_markdown,
+    _daily_tape_readout,
+    _daily_window_start,
+    _event_status_label,
+    _event_type_label,
+    _event_correction_payload,
+    _format_patch_payload,
     _format_datetime,
     _format_trade_balance,
     _has_positive_amount_counts,
+    _join_labels,
+    _join_review_reasons,
     _missing_workflow_secret_names,
     _overview_readout,
+    _review_action_label,
+    _review_decision_label,
+    _review_status_label,
     _selected_country_iso_code,
     _secret_matches,
+    _split_review_values,
+    _source_freshness_warnings,
     _stage_label,
     _transaction_readout,
     _transaction_type_label,
@@ -74,6 +88,53 @@ def test_transaction_helpers_format_labels_and_country_selection() -> None:
     assert _selected_country_iso_code("All countries") is None
 
 
+def test_event_helpers_format_source_of_truth_labels() -> None:
+    assert _event_type_label("fuel_supply") == "Fuel Supply"
+    assert _event_status_label("needs_review") == "Needs Review"
+    assert _review_status_label("important") == "Important"
+    assert _review_decision_label("irrelevant") == "Noise"
+    assert _review_action_label("mark_duplicate") == "Marked Duplicate"
+    assert _join_labels(["official_confirmation", "fuel_cycle_relevance"]) == (
+        "Official Confirmation, Fuel Cycle Relevance"
+    )
+    assert _join_review_reasons(["official_source", "low_confidence"]) == "official source, low confidence"
+    assert _join_labels([]) == ""
+
+
+def test_review_correction_helpers_capture_only_changed_fields() -> None:
+    event = SimpleNamespace(
+        title="Original title",
+        country_iso_code="USA",
+        project_name="Project A",
+        amount_text="USD 10m",
+        summary="Original summary",
+        materiality_flags=["official_confirmation"],
+        themes=["policy"],
+    )
+
+    payload = _event_correction_payload(
+        event,
+        title="Original title",
+        country_iso_code="USA",
+        project_name="Project B",
+        amount_text="USD 10m",
+        summary="Sharper summary",
+        materiality_flags=["official_confirmation", "fuel_cycle_relevance"],
+        themes=["policy"],
+    )
+
+    assert payload == {
+        "project_name": "Project B",
+        "summary": "Sharper summary",
+        "materiality_flags": ["official_confirmation", "fuel_cycle_relevance"],
+    }
+    assert _split_review_values("policy, fuel_cycle, ") == ["policy", "fuel_cycle"]
+    assert _format_patch_payload(payload) == (
+        "project_name: Project B; summary: Sharper summary; "
+        "materiality_flags: ['official_confirmation', 'fuel_cycle_relevance']"
+    )
+
+
 def test_transaction_readout_explains_public_signals_without_amounts() -> None:
     metrics = SimpleNamespace(
         transaction_count=8,
@@ -117,3 +178,73 @@ def test_missing_workflow_secret_names_reports_specific_missing_values() -> None
     assert _missing_workflow_secret_names("token", None) == ["WORKFLOW_TRIGGER_PIN"]
     assert _missing_workflow_secret_names(None, "1234") == ["GITHUB_ACTIONS_TOKEN"]
     assert _missing_workflow_secret_names("token", "1234") == []
+
+
+def test_daily_window_start_returns_expected_utc_ranges() -> None:
+    now = datetime(2026, 8, 14, 12, 30, tzinfo=timezone.utc)
+
+    assert _daily_window_start("Today", now=now) == datetime(2026, 8, 14, tzinfo=timezone.utc)
+    assert _daily_window_start("Last 24 hours", now=now) == datetime(2026, 8, 13, 12, 30, tzinfo=timezone.utc)
+    assert _daily_window_start("Last 7 days", now=now) == datetime(2026, 8, 7, 12, 30, tzinfo=timezone.utc)
+    assert _daily_window_start("Last 30 days", now=now) == datetime(2026, 7, 15, 12, 30, tzinfo=timezone.utc)
+
+
+def test_daily_tape_readout_counts_unique_events() -> None:
+    event = SimpleNamespace(id="event-1")
+    sections = {
+        "New Official Events": [event],
+        "Material Changes": [event],
+        "Watchlist Hits": [],
+        "Needs Review": [SimpleNamespace(id="event-2")],
+    }
+
+    readout = _daily_tape_readout(sections, "Last 7 days")
+
+    assert "2 unique event(s)" in readout
+    assert "1 official item(s)" in readout
+    assert "1 item(s) need review" in readout
+
+
+def test_source_freshness_warnings_report_failed_and_stale_sources() -> None:
+    now = datetime(2026, 8, 14, 12, tzinfo=timezone.utc)
+    health = [
+        SimpleNamespace(source_name="EU TED", latest_run_status="failed", latest_run_at=now),
+        SimpleNamespace(
+            source_name="USAspending.gov",
+            latest_run_status="succeeded",
+            latest_run_at=datetime(2026, 8, 12, 0, tzinfo=timezone.utc),
+        ),
+    ]
+
+    warnings = _source_freshness_warnings(health, now=now, stale_hours=24)
+
+    assert "EU TED failed on its latest run." in warnings
+    assert "USAspending.gov has not refreshed in 60 hours." in warnings
+
+
+def test_daily_brief_markdown_groups_sections_with_sources() -> None:
+    event = SimpleNamespace(
+        id="event-1",
+        event_date=datetime(2026, 8, 14, 9, tzinfo=timezone.utc),
+        event_type="fuel_supply",
+        country_name="United States",
+        country_iso_code="USA",
+        project_name=None,
+        title="DOE announces HALEU fuel award",
+        materiality_flags=["official_confirmation", "fuel_cycle_relevance"],
+        source_name="USAspending.gov",
+        source_url="https://example.com/award",
+    )
+
+    brief = _daily_brief_markdown(
+        window_label="Last 7 days",
+        sections={"Fuel Cycle": [event], "Needs Review": []},
+        source_warnings=["GDELT failed on its latest run."],
+        generated_at=datetime(2026, 8, 14, 12, tzinfo=timezone.utc),
+    )
+
+    assert "# Nuclear Daily Tape - 2026-08-14 12:00 UTC" in brief
+    assert "## Source Warnings" in brief
+    assert "## Fuel Cycle" in brief
+    assert "DOE announces HALEU fuel award" in brief
+    assert "[USAspending.gov](https://example.com/award)" in brief

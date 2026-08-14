@@ -81,6 +81,30 @@ class NuclearTransaction(BaseModel):
     raw_payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class NuclearEvent(BaseModel):
+    external_id: str = Field(min_length=1)
+    source_document_id: str = Field(min_length=1)
+    event_type: str = Field(min_length=1)
+    event_status: str = "detected"
+    source_tier: str = "unclassified"
+    event_date: Optional[datetime] = None
+    country_iso_code: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    country_name: Optional[str] = None
+    project_name: Optional[str] = None
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    amount_text: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    materiality_flags: list[str] = Field(default_factory=list)
+    themes: list[str] = Field(default_factory=list)
+    source_confidence: float = Field(ge=0, le=1)
+    evidence_snippet: str = Field(min_length=1)
+    source_name: str = Field(min_length=1)
+    source_url: str = Field(min_length=1)
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class OfficialTransactionRecord(BaseModel):
     document: RawDocument
     transaction_external_id: str = Field(min_length=1)

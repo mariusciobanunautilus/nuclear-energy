@@ -14,17 +14,22 @@ from nuclear_energy.db import (
     delete_detected_nuclear_transactions,
     fetch_chunks_needing_embeddings,
     fetch_document_id_map,
+    fetch_documents_for_event_detection,
     fetch_documents_for_transaction_detection,
     fetch_documents_for_export,
     fetch_documents_without_chunks,
     replace_document_chunks,
+    record_ingestion_run,
     semantic_search_chunks,
+    sync_event_relationships,
+    sync_events_from_transactions,
     upsert_country_energy_years,
+    upsert_nuclear_events,
     upsert_nuclear_transactions,
     update_chunk_embeddings,
     upsert_documents,
 )
-from nuclear_energy.models import OfficialTransactionRecord
+from nuclear_energy.models import OfficialTransactionRecord, SourceKind
 from nuclear_energy.embeddings import (
     DEFAULT_EMBEDDING_BATCH_SIZE,
     DEFAULT_EMBEDDING_MODEL,
@@ -34,6 +39,7 @@ from nuclear_energy.embeddings import (
 )
 from nuclear_energy.exports import documents_to_csv, documents_to_markdown
 from nuclear_energy.extraction.text import chunk_text, fetch_article_text
+from nuclear_energy.extraction.events import detect_nuclear_events
 from nuclear_energy.extraction.transactions import detect_nuclear_transactions
 from nuclear_energy.sources.federal_register import (
     DEFAULT_FEDERAL_REGISTER_QUERY,
@@ -58,6 +64,7 @@ def _ingest_rss(args: argparse.Namespace) -> int:
 
     documents = fetch_rss_feeds(feeds, limit_per_feed=args.limit)
     stored = upsert_documents(documents)
+    _record_ingestion_success(SourceKind.rss, "RSS feeds", len(documents), stored)
     print(f"Stored {stored} RSS documents from {len(feeds)} feed(s).")
     return 0
 
@@ -71,9 +78,11 @@ def _ingest_gdelt(args: argparse.Namespace) -> int:
             timeout=args.timeout,
         )
     except httpx.HTTPError as exc:
+        _record_ingestion_failure(SourceKind.gdelt, "GDELT DOC 2.0", exc)
         print(_describe_source_http_error("GDELT", exc))
         return 1
     stored = upsert_documents(documents)
+    _record_ingestion_success(SourceKind.gdelt, "GDELT DOC 2.0", len(documents), stored)
     print(f"Stored {stored} GDELT document(s).")
     return 0
 
@@ -86,9 +95,11 @@ def _ingest_federal_register(args: argparse.Namespace) -> int:
             timeout=args.timeout,
         )
     except httpx.HTTPError as exc:
+        _record_ingestion_failure(SourceKind.federal_register, "Federal Register", exc)
         print(_describe_source_http_error("Federal Register", exc))
         return 1
     stored = upsert_documents(documents)
+    _record_ingestion_success(SourceKind.federal_register, "Federal Register", len(documents), stored)
     print(f"Stored {stored} Federal Register document(s).")
     return 0
 
@@ -101,9 +112,11 @@ def _ingest_eur_lex(args: argparse.Namespace) -> int:
             timeout=args.timeout,
         )
     except httpx.HTTPError as exc:
+        _record_ingestion_failure(SourceKind.eur_lex, "EUR-Lex", exc)
         print(_describe_source_http_error("EUR-Lex", exc))
         return 1
     stored = upsert_documents(documents)
+    _record_ingestion_success(SourceKind.eur_lex, "EUR-Lex", len(documents), stored)
     print(f"Stored {stored} EUR-Lex document(s).")
     return 0
 
@@ -136,13 +149,16 @@ def _ingest_usaspending_transactions(args: argparse.Namespace) -> int:
             timeout=args.timeout,
         )
     except httpx.HTTPError as exc:
+        _record_ingestion_failure(SourceKind.usaspending, "USAspending.gov", exc)
         print(_describe_source_http_error("USAspending.gov", exc))
         return 1
 
     stored_documents, stored_transactions = _store_official_transaction_records(records)
+    synced_events = sync_events_from_transactions()
+    _record_ingestion_success(SourceKind.usaspending, "USAspending.gov", len(records), stored_documents)
     print(
         f"Stored {stored_transactions} USAspending transaction(s) "
-        f"with {stored_documents} official evidence document(s)."
+        f"with {stored_documents} official evidence document(s); synced {synced_events} event(s)."
     )
     return 0
 
@@ -158,13 +174,16 @@ def _ingest_ted_procurements(args: argparse.Namespace) -> int:
             timeout=args.timeout,
         )
     except httpx.HTTPError as exc:
+        _record_ingestion_failure(SourceKind.eu_ted, "EU TED", exc)
         print(_describe_source_http_error("EU TED", exc))
         return 1
 
     stored_documents, stored_transactions = _store_official_transaction_records(records)
+    synced_events = sync_events_from_transactions()
+    _record_ingestion_success(SourceKind.eu_ted, "EU TED", len(records), stored_documents)
     print(
         f"Stored {stored_transactions} EU TED procurement transaction(s) "
-        f"with {stored_documents} official evidence document(s)."
+        f"with {stored_documents} official evidence document(s); synced {synced_events} event(s)."
     )
     return 0
 
@@ -218,10 +237,37 @@ def _detect_transactions(args: argparse.Namespace) -> int:
     if args.replace_detected:
         removed = delete_detected_nuclear_transactions(source_name=args.source_name)
     stored = upsert_nuclear_transactions(transactions)
+    synced_events = sync_events_from_transactions()
     print(
         f"Detected {stored} transaction signal(s) from {len(documents)} document(s); "
-        f"removed {removed} previous detected signal(s)."
+        f"removed {removed} previous detected signal(s); synced {synced_events} event(s)."
     )
+    return 0
+
+
+def _detect_events(args: argparse.Namespace) -> int:
+    documents = fetch_documents_for_event_detection(
+        limit=args.limit,
+        source_name=args.source_name,
+    )
+    events = detect_nuclear_events(
+        documents,
+        min_confidence=args.min_confidence,
+    )
+    stored = upsert_nuclear_events(events)
+    print(f"Detected {stored} source-backed event(s) from {len(documents)} document(s).")
+    return 0
+
+
+def _sync_events(args: argparse.Namespace) -> int:
+    synced = sync_events_from_transactions(limit=args.limit)
+    print(f"Synced {synced} source-backed event(s) from transaction rows.")
+    return 0
+
+
+def _sync_relationships(args: argparse.Namespace) -> int:
+    synced = sync_event_relationships(limit=args.limit)
+    print(f"Refreshed entity and project links for {synced} event(s).")
     return 0
 
 
@@ -335,6 +381,36 @@ def _dashboard(args: argparse.Namespace) -> int:
         "true",
     ]
     return subprocess.call(command)
+
+
+def _record_ingestion_success(
+    source_kind: SourceKind,
+    source_name: str,
+    documents_seen: int,
+    documents_stored: int,
+) -> None:
+    try:
+        record_ingestion_run(
+            source_kind=source_kind,
+            source_name=source_name,
+            status="succeeded",
+            documents_seen=documents_seen,
+            documents_stored=documents_stored,
+        )
+    except Exception:
+        return
+
+
+def _record_ingestion_failure(source_kind: SourceKind, source_name: str, exc: Exception) -> None:
+    try:
+        record_ingestion_run(
+            source_kind=source_kind,
+            source_name=source_name,
+            status="failed",
+            error_message=str(exc),
+        )
+    except Exception:
+        return
 
 
 def _describe_openai_error(exc: Exception) -> str:
@@ -493,6 +569,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     detect_transactions.set_defaults(replace_detected=True)
     detect_transactions.set_defaults(func=_detect_transactions)
+
+    detect_events = subparsers.add_parser(
+        "detect-events",
+        help="Detect broader source-backed nuclear events in stored documents.",
+    )
+    detect_events.add_argument("--limit", type=int, default=500, help="Maximum stored documents to scan.")
+    detect_events.add_argument("--source-name", help="Only scan documents from this exact source name.")
+    detect_events.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.5,
+        help="Minimum confidence score between 0 and 1.",
+    )
+    detect_events.set_defaults(func=_detect_events)
+
+    sync_events = subparsers.add_parser(
+        "sync-events",
+        help="Refresh source-backed event rows from stored transaction evidence.",
+    )
+    sync_events.add_argument("--limit", type=int, help="Maximum transaction rows to sync.")
+    sync_events.set_defaults(func=_sync_events)
+
+    sync_relationships = subparsers.add_parser(
+        "sync-relationships",
+        help="Refresh entity and project links for normalized event rows.",
+    )
+    sync_relationships.add_argument("--limit", type=int, help="Maximum event rows to refresh.")
+    sync_relationships.set_defaults(func=_sync_relationships)
 
     embed_chunks = subparsers.add_parser(
         "embed-chunks",

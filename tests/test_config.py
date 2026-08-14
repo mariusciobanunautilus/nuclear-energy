@@ -24,3 +24,20 @@ def test_settings_loads_env_files_from_current_directory(tmp_path, monkeypatch):
         assert config.get_settings().rss_feeds == ["https://a.example/rss", "https://b.example/rss"]
     finally:
         config.get_settings.cache_clear()
+
+
+def test_settings_loads_watchlist_values(monkeypatch):
+    monkeypatch.setenv("WATCHLIST_ENTITIES", "Westinghouse, Cameco")
+    monkeypatch.setenv("WATCHLIST_PROJECTS", "Cernavoda, Sizewell C")
+    monkeypatch.setenv("WATCHLIST_COUNTRIES", "USA, ROU")
+    monkeypatch.setenv("WATCHLIST_THEMES", "fuel_cycle, policy")
+
+    config.get_settings.cache_clear()
+    try:
+        settings = config.get_settings()
+        assert settings.watchlist_entities == ["Westinghouse", "Cameco"]
+        assert settings.watchlist_projects == ["Cernavoda", "Sizewell C"]
+        assert settings.watchlist_countries == ["USA", "ROU"]
+        assert settings.watchlist_themes == ["fuel_cycle", "policy"]
+    finally:
+        config.get_settings.cache_clear()

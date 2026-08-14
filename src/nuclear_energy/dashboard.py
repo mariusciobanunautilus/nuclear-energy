@@ -3,27 +3,42 @@ from __future__ import annotations
 import hmac
 import os
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 from nuclear_energy.automation import GITHUB_ACTIONS_URL, WorkflowDispatchError, trigger_github_workflow
+from nuclear_energy.config import get_settings
 from nuclear_energy.db import (
     fetch_dashboard_metrics,
     fetch_documents_for_export,
     fetch_energy_country_summaries,
     fetch_energy_system_metrics,
     fetch_energy_years,
+    fetch_entity_summaries,
+    fetch_event_evidence,
+    fetch_event_metrics,
+    fetch_events_for_entity,
+    fetch_events_for_project,
+    fetch_recent_events,
     fetch_recent_documents,
+    fetch_review_history,
+    fetch_review_metrics,
+    fetch_review_queue,
+    fetch_watchlist_events,
+    fetch_project_summaries,
     fetch_source_summaries,
+    fetch_source_health,
     fetch_recent_transactions,
     search_documents_keyword,
     fetch_transaction_country_summaries,
     fetch_transaction_metrics,
     fetch_transaction_type_summaries,
     fetch_transaction_year_summaries,
+    source_tier_label,
+    update_event_review,
 )
 from nuclear_energy.exports import documents_to_csv, documents_to_markdown
 
@@ -49,28 +64,40 @@ def main() -> None:
     _render_metric_strip(metrics)
 
     tabs = st.tabs([
-        "Overview",
+        "Daily Tape",
+        "Source Health",
         "Energy System",
-        "Transactions",
+        "Events",
+        "Entities",
+        "Projects",
         "Documents",
         "Keyword Search",
         "Exports",
         "Automation",
+        "Review Queue",
     ])
     with tabs[0]:
-        _render_overview(source_summaries)
+        _render_daily_tape()
     with tabs[1]:
-        _render_energy_system()
+        _render_source_health(source_summaries)
     with tabs[2]:
-        _render_transactions()
+        _render_energy_system()
     with tabs[3]:
-        _render_documents(source_names)
+        _render_events()
     with tabs[4]:
-        _render_keyword_search(source_names)
+        _render_entities()
     with tabs[5]:
-        _render_exports(source_names)
+        _render_projects()
     with tabs[6]:
+        _render_documents(source_names)
+    with tabs[7]:
+        _render_keyword_search(source_names)
+    with tabs[8]:
+        _render_exports(source_names)
+    with tabs[9]:
         _render_automation()
+    with tabs[10]:
+        _render_review_queue()
 
 
 def _render_metric_strip(metrics) -> None:
@@ -88,6 +115,118 @@ def _render_metric_strip(metrics) -> None:
         )
     if metrics.latest_published_at:
         st.caption(f"Latest published item: {_format_datetime(metrics.latest_published_at)}")
+
+
+def _render_daily_tape() -> None:
+    metrics = _load_or_stop(fetch_event_metrics)
+    settings = get_settings()
+    window_label = st.selectbox("Window", ["Last 24 hours", "Today", "Last 7 days", "Last 30 days"], index=2)
+    since = _daily_window_start(window_label)
+    health = _load_or_stop(fetch_source_health)
+    source_warnings = _source_freshness_warnings(health)
+    sections = {
+        "New Official Events": _load_or_stop(fetch_recent_events, limit=50, since=since, official_only=True),
+        "Material Changes": _load_or_stop(
+            fetch_recent_events,
+            limit=50,
+            since=since,
+            materiality_flags=[
+                "large_public_value",
+                "fuel_cycle_relevance",
+                "project_stage_change",
+                "country_policy_shift",
+                "supply_risk",
+            ],
+        ),
+        "Watchlist Hits": _load_or_stop(
+            fetch_watchlist_events,
+            limit=50,
+            since=since,
+            entities=settings.watchlist_entities,
+            projects=settings.watchlist_projects,
+            countries=settings.watchlist_countries,
+            themes=settings.watchlist_themes,
+        ),
+        "Marked Important": _load_or_stop(fetch_recent_events, limit=50, since=since, review_status="important"),
+        "Fuel Cycle": _load_or_stop(fetch_recent_events, limit=50, since=since, themes=["fuel_cycle"]),
+        "Policy & Regulation": _load_or_stop(fetch_recent_events, limit=50, since=since, themes=["policy", "regulation"]),
+        "Project Movement": _load_or_stop(
+            fetch_recent_events,
+            limit=50,
+            since=since,
+            themes=["project_stage", "construction", "operations", "project_risk"],
+        ),
+        "Needs Review": _load_or_stop(fetch_recent_events, limit=50, since=since, needs_review=True),
+    }
+    st.caption(
+        "A sectioned morning tape of source-backed nuclear changes. "
+        "This is evidence for research, not a trade instruction."
+    )
+    columns = st.columns(5)
+    columns[0].metric("Events", f"{metrics.event_count:,}")
+    columns[1].metric("Official", f"{metrics.official_event_count:,}")
+    columns[2].metric("Unreviewed", f"{metrics.needs_review_count:,}")
+    columns[3].metric("Important", f"{metrics.important_count:,}")
+    columns[4].metric("Latest", _format_datetime(metrics.latest_event_date) or "n/a")
+
+    st.caption(_daily_tape_readout(sections, window_label))
+    if source_warnings:
+        st.warning(" ".join(source_warnings))
+
+    all_section_events = [event for events in sections.values() for event in events]
+    if not all_section_events:
+        st.info("No normalized events matched this window. Run detect-events, sync-events, and sync-relationships after ingestion.")
+        return
+
+    brief = _daily_brief_markdown(
+        window_label=window_label,
+        sections=sections,
+        source_warnings=source_warnings,
+    )
+    st.download_button(
+        "Download Daily Brief",
+        data=brief,
+        file_name="nuclear-daily-tape.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+
+    for title, events in sections.items():
+        _render_tape_section(title, events)
+
+
+def _render_source_health(source_summaries) -> None:
+    _render_overview(source_summaries)
+    health = _load_or_stop(fetch_source_health)
+    frame = _frame(health)
+    if frame.empty:
+        return
+
+    frame["source_tier"] = frame["source_tier"].map(source_tier_label)
+    display_frame = frame.rename(
+        columns={
+            "source_name": "source",
+            "source_kind": "kind",
+            "source_tier": "trust_tier",
+            "document_count": "documents",
+            "latest_published_at": "latest_published",
+            "latest_seen_at": "last_seen",
+            "latest_run_at": "last_run",
+            "latest_run_status": "run_status",
+            "latest_run_error": "run_error",
+        }
+    )
+    st.markdown("#### Source Freshness")
+    st.caption("Source health shows what the database last saw, how trusted the source class is, and whether recent runs failed.")
+    st.dataframe(display_frame, use_container_width=True, hide_index=True)
+
+
+def _render_tape_section(title: str, events) -> None:
+    st.markdown(f"#### {title}")
+    if not events:
+        st.caption("No matching events in this window.")
+        return
+    _render_event_table(events, rows=25)
 
 
 def _render_overview(source_summaries) -> None:
@@ -416,6 +555,37 @@ def _render_energy_system() -> None:
     st.dataframe(display_years, use_container_width=True, hide_index=True)
 
 
+def _render_events() -> None:
+    country_summaries = _load_or_stop(fetch_transaction_country_summaries, limit=100)
+    country_options = [ALL_COUNTRIES] + [
+        f"{summary.country_name} ({summary.country_iso_code})"
+        for summary in country_summaries
+    ]
+    controls = st.columns([2, 1, 1])
+    selected_country = controls[0].selectbox("Country", country_options, key="events_country")
+    review_status = controls[1].selectbox(
+        "Review",
+        ["All", "unreviewed", "reviewed", "important", "irrelevant", "duplicate", "corrected"],
+        key="events_review",
+    )
+    official_only = controls[2].checkbox("Official only", value=False, key="events_official_only")
+    events = _load_or_stop(
+        fetch_recent_events,
+        limit=100,
+        country_iso_code=_selected_country_iso_code(selected_country),
+        review_status=None if review_status == "All" else review_status,
+        official_only=official_only,
+    )
+    if not events:
+        st.info("No events matched.")
+        return
+
+    st.caption(
+        "Events normalize public evidence into one auditable tape. Use review status to separate trusted facts, important items, and noise."
+    )
+    _render_event_table(events, rows=100)
+
+
 def _render_transactions() -> None:
     country_summaries = _load_or_stop(fetch_transaction_country_summaries, limit=100)
     country_options = [ALL_COUNTRIES] + [
@@ -560,7 +730,330 @@ def _render_transaction_evidence_table(recent_transactions) -> None:
             ),
             "url": st.column_config.LinkColumn("source link"),
         },
+        )
+
+
+def _render_event_table(events, *, rows: int) -> None:
+    event_frame = _frame(events)
+    if event_frame.empty:
+        return
+    event_frame["event_type"] = event_frame["event_type"].map(_event_type_label)
+    event_frame["event_status"] = event_frame["event_status"].map(_event_status_label)
+    event_frame["review_status"] = event_frame["review_status"].map(_review_status_label)
+    event_frame["source_tier"] = event_frame["source_tier"].map(source_tier_label)
+    event_frame["materiality_flags"] = event_frame["materiality_flags"].map(_join_labels)
+    event_frame["themes"] = event_frame["themes"].map(_join_labels)
+    display_frame = event_frame[
+        [
+            "event_date",
+            "source_tier",
+            "event_type",
+            "event_status",
+            "review_status",
+            "country_name",
+            "project_name",
+            "amount_text",
+            "materiality_flags",
+            "themes",
+            "source_confidence",
+            "evidence_count",
+            "title",
+            "summary",
+            "source_name",
+            "source_url",
+        ]
+    ].rename(
+        columns={
+            "event_date": "date",
+            "source_tier": "trust_tier",
+            "event_type": "type",
+            "event_status": "status",
+            "review_status": "review",
+            "country_name": "country",
+            "project_name": "project",
+            "amount_text": "amount",
+            "materiality_flags": "why_it_matters",
+            "source_confidence": "confidence",
+            "evidence_count": "evidence",
+            "title": "event",
+            "summary": "source_summary",
+            "source_name": "source",
+            "source_url": "url",
+        }
     )
+    display_frame["country"] = display_frame["country"].fillna("not specified")
+    display_frame["project"] = display_frame["project"].fillna("not specified")
+    display_frame["amount"] = display_frame["amount"].fillna("not public")
+    display_frame["confidence"] = display_frame["confidence"].round(2)
+    st.dataframe(
+        display_frame.head(rows),
+        use_container_width=True,
+        hide_index=True,
+        height=420,
+        column_config={
+            "confidence": st.column_config.ProgressColumn(
+                "confidence",
+                min_value=0.0,
+                max_value=1.0,
+                format="%.2f",
+            ),
+            "url": st.column_config.LinkColumn("source link"),
+        },
+    )
+
+
+def _render_review_queue() -> None:
+    metrics = _load_or_stop(fetch_review_metrics)
+    metric_columns = st.columns(6)
+    metric_columns[0].metric("Queue", f"{metrics.queue_count:,}")
+    metric_columns[1].metric("Official To Check", f"{metrics.official_unreviewed_count:,}")
+    metric_columns[2].metric("Low Confidence", f"{metrics.low_confidence_count:,}")
+    metric_columns[3].metric("Important", f"{metrics.important_count:,}")
+    metric_columns[4].metric("Corrected", f"{metrics.corrected_count:,}")
+    metric_columns[5].metric("Duplicates", f"{metrics.duplicate_count:,}")
+
+    queue = _load_or_stop(fetch_review_queue, limit=50)
+    if not queue:
+        st.info("No events need review.")
+        return
+
+    st.caption("Reviewing events is how the tool becomes a source of truth: keep useful facts, mark noise, and leave context.")
+    _render_review_queue_table(queue)
+    st.markdown("#### Review Event")
+    labels = {f"{item.title[:100]} ({item.id[:8]})": item.id for item in queue}
+    items_by_id = {item.id: item for item in queue}
+    with st.form("event_review_form"):
+        selected_label = st.selectbox("Event", list(labels))
+        selected_event = items_by_id[labels[selected_label]]
+        status = st.selectbox(
+            "Decision",
+            ["reviewed", "important", "irrelevant", "duplicate", "corrected"],
+            format_func=_review_decision_label,
+        )
+        duplicate_of = st.text_input(
+            "Duplicate of event id",
+            placeholder="Only needed when marking as duplicate",
+            disabled=status != "duplicate",
+        )
+        reviewer = st.text_input("Reviewer", placeholder="Optional")
+        st.markdown("##### Correction Fields")
+        correction_columns = st.columns(2)
+        corrected_title = correction_columns[0].text_input("Title", value=selected_event.title)
+        corrected_country = correction_columns[1].text_input(
+            "Country ISO",
+            value=selected_event.country_iso_code or "",
+            max_chars=3,
+        )
+        corrected_project = correction_columns[0].text_input("Project", value=selected_event.project_name or "")
+        corrected_amount = correction_columns[1].text_input("Public amount", value=selected_event.amount_text or "")
+        corrected_summary = st.text_area("Summary", value=selected_event.summary, height=100)
+        corrected_flags = st.text_input("Why it matters", value=", ".join(selected_event.materiality_flags))
+        corrected_themes = st.text_input("Themes", value=", ".join(selected_event.themes))
+        note = st.text_area("Note", height=90)
+        submitted = st.form_submit_button("Save review")
+    if submitted:
+        corrected_fields = _event_correction_payload(
+            selected_event,
+            title=corrected_title,
+            country_iso_code=corrected_country,
+            project_name=corrected_project,
+            amount_text=corrected_amount,
+            summary=corrected_summary,
+            materiality_flags=_split_review_values(corrected_flags),
+            themes=_split_review_values(corrected_themes),
+        )
+        _load_or_stop(
+            update_event_review,
+            selected_event.id,
+            review_status=status,
+            note=note or None,
+            reviewer=reviewer or None,
+            duplicate_of_event_id=(duplicate_of.strip() or None) if status == "duplicate" else None,
+            corrected_fields=corrected_fields,
+        )
+        st.success("Review saved.")
+        st.rerun()
+
+    selected_event_id = labels[selected_label]
+    st.markdown("#### Evidence")
+    _render_event_evidence(_load_or_stop(fetch_event_evidence, selected_event_id, limit=10))
+    st.markdown("#### Review History")
+    _render_review_history(_load_or_stop(fetch_review_history, selected_event_id, limit=10))
+
+
+def _render_review_queue_table(queue) -> None:
+    frame = _frame(queue)
+    frame["event_type"] = frame["event_type"].map(_event_type_label)
+    frame["event_status"] = frame["event_status"].map(_event_status_label)
+    frame["review_status"] = frame["review_status"].map(_review_status_label)
+    frame["source_tier"] = frame["source_tier"].map(source_tier_label)
+    frame["materiality_flags"] = frame["materiality_flags"].map(_join_labels)
+    frame["themes"] = frame["themes"].map(_join_labels)
+    frame["review_reasons"] = frame["review_reasons"].map(_join_review_reasons)
+    display_frame = frame[
+        [
+            "review_priority",
+            "event_date",
+            "source_tier",
+            "event_type",
+            "event_status",
+            "review_status",
+            "country_name",
+            "project_name",
+            "materiality_flags",
+            "themes",
+            "review_reasons",
+            "source_confidence",
+            "evidence_count",
+            "title",
+            "summary",
+            "source_name",
+            "source_url",
+        ]
+    ].rename(
+        columns={
+            "review_priority": "priority",
+            "event_date": "date",
+            "source_tier": "trust_tier",
+            "event_type": "type",
+            "event_status": "status",
+            "review_status": "review",
+            "country_name": "country",
+            "project_name": "project",
+            "materiality_flags": "why_it_matters",
+            "review_reasons": "review_reason",
+            "source_confidence": "confidence",
+            "evidence_count": "evidence",
+            "title": "event",
+            "summary": "source_summary",
+            "source_name": "source",
+            "source_url": "url",
+        }
+    )
+    display_frame["country"] = display_frame["country"].fillna("not specified")
+    display_frame["project"] = display_frame["project"].fillna("not specified")
+    display_frame["confidence"] = display_frame["confidence"].round(2)
+    st.dataframe(
+        display_frame,
+        use_container_width=True,
+        hide_index=True,
+        height=360,
+        column_config={"url": st.column_config.LinkColumn("source link")},
+    )
+
+
+def _render_event_evidence(evidence) -> None:
+    frame = _frame(evidence)
+    if frame.empty:
+        st.caption("No evidence rows found for this event.")
+        return
+    frame["source_tier"] = frame["source_tier"].map(source_tier_label)
+    display_frame = frame[
+        ["published_at", "source_tier", "evidence_kind", "source_name", "snippet", "source_url"]
+    ].rename(
+        columns={
+            "published_at": "published",
+            "source_tier": "trust_tier",
+            "evidence_kind": "kind",
+            "source_name": "source",
+            "source_url": "url",
+        }
+    )
+    st.dataframe(
+        display_frame,
+        use_container_width=True,
+        hide_index=True,
+        height=260,
+        column_config={"url": st.column_config.LinkColumn("source link")},
+    )
+
+
+def _render_review_history(history) -> None:
+    frame = _frame(history)
+    if frame.empty:
+        st.caption("No review history yet.")
+        return
+    frame["review_status"] = frame["review_status"].map(_review_status_label)
+    frame["previous_status"] = frame["previous_status"].map(lambda value: _review_status_label(value) if value else "")
+    frame["review_action"] = frame["review_action"].map(_review_action_label)
+    frame["patch_payload"] = frame["patch_payload"].map(_format_patch_payload)
+    display_frame = frame[
+        [
+            "created_at",
+            "review_action",
+            "previous_status",
+            "review_status",
+            "duplicate_of_event_id",
+            "patch_payload",
+            "note",
+            "reviewer",
+        ]
+    ].rename(
+        columns={
+            "created_at": "when",
+            "review_action": "action",
+            "previous_status": "from",
+            "review_status": "to",
+            "duplicate_of_event_id": "duplicate_of",
+            "patch_payload": "corrections",
+        }
+    )
+    st.dataframe(display_frame, use_container_width=True, hide_index=True, height=220)
+
+
+def _render_entities() -> None:
+    entities = _load_or_stop(fetch_entity_summaries, limit=150)
+    frame = _frame(entities)
+    if frame.empty:
+        st.info("No entity links yet. Run detect-events and sync-events after applying the event-layer migration.")
+        return
+
+    frame["roles"] = frame["roles"].map(_join_labels)
+    display_frame = frame.drop(columns=["id"]).rename(
+        columns={
+            "canonical_name": "entity",
+            "entity_type": "type",
+            "country_iso_code": "country",
+            "event_count": "events",
+            "latest_event_date": "latest_event",
+        }
+    )
+    st.caption("Entity profiles group source-backed nuclear events by companies, agencies, regulators, utilities, and vendors.")
+    st.dataframe(display_frame, use_container_width=True, hide_index=True, height=320)
+
+    options = {f"{item.canonical_name} ({item.event_count})": item.id for item in entities}
+    selected = st.selectbox("Entity Profile", list(options), key="entity_profile")
+    events = _load_or_stop(fetch_events_for_entity, options[selected], limit=75)
+    st.markdown("#### Entity Event Timeline")
+    _render_event_table(events, rows=75)
+
+
+def _render_projects() -> None:
+    projects = _load_or_stop(fetch_project_summaries, limit=150)
+    frame = _frame(projects)
+    if frame.empty:
+        st.info("No project links yet. Run detect-events and sync-events after applying the event-layer migration.")
+        return
+
+    frame["event_types"] = frame["event_types"].map(_join_labels)
+    display_frame = frame.drop(columns=["id"]).rename(
+        columns={
+            "canonical_name": "project",
+            "project_type": "type",
+            "country_iso_code": "iso",
+            "country_name": "country",
+            "event_count": "events",
+            "latest_event_date": "latest_event",
+        }
+    )
+    st.caption("Project profiles group source-backed events by plant, reactor, fuel facility, mine, or program.")
+    st.dataframe(display_frame, use_container_width=True, hide_index=True, height=320)
+
+    options = {f"{item.canonical_name} ({item.country_iso_code or 'n/a'}, {item.event_count})": item.id for item in projects}
+    selected = st.selectbox("Project Profile", list(options), key="project_profile")
+    events = _load_or_stop(fetch_events_for_project, options[selected], limit=75)
+    st.markdown("#### Project Event Timeline")
+    _render_event_table(events, rows=75)
 
 
 def _render_documents(source_names: list[str]) -> None:
@@ -703,7 +1196,17 @@ def _load_or_stop(func, *args, **kwargs):
 
 def _frame(items) -> pd.DataFrame:
     frame = pd.DataFrame([asdict(item) for item in items])
-    for column in ("published_at", "latest_published_at", "transaction_date", "latest_transaction_date"):
+    for column in (
+        "published_at",
+        "latest_published_at",
+        "latest_seen_at",
+        "latest_run_at",
+        "transaction_date",
+        "latest_transaction_date",
+        "event_date",
+        "latest_event_date",
+        "created_at",
+    ):
         if column in frame.columns:
             frame[column] = frame[column].map(_format_datetime)
     return frame
@@ -797,6 +1300,93 @@ def _stage_label(value: str) -> str:
     return value.replace("_", " ").title()
 
 
+def _event_type_label(value: str) -> str:
+    return value.replace("_", " ").title()
+
+
+def _event_status_label(value: str) -> str:
+    return value.replace("_", " ").title()
+
+
+def _review_status_label(value: str) -> str:
+    return value.replace("_", " ").title()
+
+
+def _review_decision_label(value: str) -> str:
+    labels = {
+        "reviewed": "Confirm",
+        "important": "Important",
+        "irrelevant": "Noise",
+        "duplicate": "Duplicate",
+        "corrected": "Corrected",
+    }
+    return labels.get(value, _review_status_label(value))
+
+
+def _review_action_label(value: str) -> str:
+    labels = {
+        "status_update": "Status Update",
+        "mark_important": "Marked Important",
+        "mark_irrelevant": "Marked Noise",
+        "mark_duplicate": "Marked Duplicate",
+        "correction": "Correction",
+    }
+    return labels.get(value, value.replace("_", " ").title())
+
+
+def _split_review_values(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _join_review_reasons(values) -> str:
+    labels = {
+        "official_source": "official source",
+        "needs_review_status": "needs review",
+        "low_confidence": "low confidence",
+        "needs_review_flag": "flagged",
+        "large_public_value": "large value",
+        "fuel_cycle_relevance": "fuel cycle",
+        "project_stage_change": "project movement",
+        "supply_risk": "supply risk",
+    }
+    return ", ".join(labels.get(str(value), str(value).replace("_", " ")) for value in values or [])
+
+
+def _format_patch_payload(value) -> str:
+    if not value:
+        return ""
+    if isinstance(value, dict):
+        return "; ".join(f"{key}: {display_value}" for key, display_value in value.items())
+    return str(value)
+
+
+def _event_correction_payload(event, **values) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    comparisons = {
+        "title": getattr(event, "title", None),
+        "country_iso_code": getattr(event, "country_iso_code", None) or "",
+        "project_name": getattr(event, "project_name", None) or "",
+        "amount_text": getattr(event, "amount_text", None) or "",
+        "summary": getattr(event, "summary", None),
+        "materiality_flags": list(getattr(event, "materiality_flags", []) or []),
+        "themes": list(getattr(event, "themes", []) or []),
+    }
+    for key, new_value in values.items():
+        if isinstance(new_value, str):
+            new_value = new_value.strip()
+        if key in {"materiality_flags", "themes"}:
+            new_value = list(new_value or [])
+        if new_value != comparisons.get(key):
+            payload[key] = new_value
+    return payload
+
+
+def _join_labels(values) -> str:
+    if not values:
+        return ""
+    return ", ".join(str(value).replace("_", " ").title() for value in values)
+
+
 def _overview_readout(source_frame: pd.DataFrame) -> str:
     documents = int(source_frame["document_count"].sum())
     with_text = int(source_frame["documents_with_content"].sum())
@@ -834,6 +1424,98 @@ def _transaction_readout(metrics) -> str:
         f"{metrics.transaction_count:,} public {signal_word} {signal_verb} in scope across "
         f"{metrics.country_count:,} {country_word}. Latest signal date: {latest}. {amount_sentence}"
     )
+
+
+def _daily_window_start(window_label: str, *, now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    if window_label == "Today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if window_label == "Last 24 hours":
+        return now - timedelta(hours=24)
+    if window_label == "Last 30 days":
+        return now - timedelta(days=30)
+    return now - timedelta(days=7)
+
+
+def _daily_tape_readout(sections: dict[str, list], window_label: str) -> str:
+    unique_event_ids = {
+        getattr(event, "id", f"{section}:{index}")
+        for section, events in sections.items()
+        for index, event in enumerate(events)
+    }
+    official_count = len(sections.get("New Official Events", []))
+    material_count = len(sections.get("Material Changes", []))
+    watchlist_count = len(sections.get("Watchlist Hits", []))
+    review_count = len(sections.get("Needs Review", []))
+    return (
+        f"{len(unique_event_ids):,} unique event(s) matched {window_label.lower()}. "
+        f"{official_count:,} official item(s), {material_count:,} material-change item(s), "
+        f"{watchlist_count:,} watchlist hit(s), and {review_count:,} item(s) need review."
+    )
+
+
+def _source_freshness_warnings(source_health, *, now: datetime | None = None, stale_hours: int = 36) -> list[str]:
+    now = now or datetime.now(timezone.utc)
+    warnings = []
+    for source in source_health:
+        source_name = getattr(source, "source_name", "Unknown source")
+        status = getattr(source, "latest_run_status", None)
+        if status == "failed":
+            warnings.append(f"{source_name} failed on its latest run.")
+            continue
+        latest_run_at = getattr(source, "latest_run_at", None)
+        if latest_run_at is None:
+            continue
+        if latest_run_at.tzinfo is None:
+            latest_run_at = latest_run_at.replace(tzinfo=timezone.utc)
+        age_hours = (now - latest_run_at).total_seconds() / 3600
+        if age_hours > stale_hours:
+            warnings.append(f"{source_name} has not refreshed in {age_hours:.0f} hours.")
+    return warnings
+
+
+def _daily_brief_markdown(
+    *,
+    window_label: str,
+    sections: dict[str, list],
+    source_warnings: list[str],
+    generated_at: datetime | None = None,
+) -> str:
+    generated_at = generated_at or datetime.now(timezone.utc)
+    lines = [
+        f"# Nuclear Daily Tape - {_format_datetime(generated_at)} UTC",
+        "",
+        _daily_tape_readout(sections, window_label),
+        "",
+    ]
+    if source_warnings:
+        lines.extend(["## Source Warnings", ""])
+        lines.extend(f"- {warning}" for warning in source_warnings)
+        lines.append("")
+    for section, events in sections.items():
+        lines.extend([f"## {section}", ""])
+        if not events:
+            lines.extend(["No matching events.", ""])
+            continue
+        for event in events[:25]:
+            date = _format_datetime(getattr(event, "event_date", None)) or "date n/a"
+            source = getattr(event, "source_name", None) or "source n/a"
+            source_url = getattr(event, "source_url", None)
+            title = getattr(event, "title", "Untitled event")
+            event_type = _event_type_label(getattr(event, "event_type", "event"))
+            country = getattr(event, "country_name", None) or getattr(event, "country_iso_code", None) or "location n/a"
+            project = getattr(event, "project_name", None)
+            flags = _join_labels(getattr(event, "materiality_flags", []))
+            context = f"{country}" + (f" | {project}" if project else "")
+            lines.append(f"- **{date} | {event_type} | {context}**: {title}")
+            if flags:
+                lines.append(f"  - Why it matters: {flags}")
+            if source_url:
+                lines.append(f"  - Source: [{source}]({source_url})")
+            else:
+                lines.append(f"  - Source: {source}")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
 
 
 def _plural(count: int, singular: str, plural: str | None = None) -> str:

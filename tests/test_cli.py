@@ -43,10 +43,32 @@ def test_parser_accepts_transaction_detection_options():
     assert args.replace_detected is True
 
 
+def test_parser_accepts_event_detection_options():
+    args = build_parser().parse_args(["detect-events", "--limit", "25", "--min-confidence", "0.7"])
+
+    assert args.command == "detect-events"
+    assert args.limit == 25
+    assert args.min_confidence == 0.7
+
+
 def test_parser_can_keep_existing_transaction_rows():
     args = build_parser().parse_args(["detect-transactions", "--keep-existing"])
 
     assert args.replace_detected is False
+
+
+def test_parser_accepts_event_sync_options():
+    args = build_parser().parse_args(["sync-events", "--limit", "25"])
+
+    assert args.command == "sync-events"
+    assert args.limit == 25
+
+
+def test_parser_accepts_relationship_sync_options():
+    args = build_parser().parse_args(["sync-relationships", "--limit", "25"])
+
+    assert args.command == "sync-relationships"
+    assert args.limit == 25
 
 
 def test_parser_accepts_usaspending_ingest_options():
