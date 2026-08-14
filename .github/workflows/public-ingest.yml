@@ -39,5 +39,7 @@ jobs:
           nuclear-energy ingest-eur-lex --limit 20
           nuclear-energy ingest-gdelt --limit 20 || echo "GDELT ingest skipped or rate-limited."
           nuclear-energy ingest-energy --since-year 2000
+          nuclear-energy ingest-usaspending --limit 50 || echo "USAspending ingest skipped or unavailable."
+          nuclear-energy ingest-eu-ted --limit 50 || echo "EU TED ingest skipped or unavailable."
           nuclear-energy extract-documents --limit 30
           nuclear-energy detect-transactions --limit 500

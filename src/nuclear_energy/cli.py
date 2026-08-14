@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 import httpx
@@ -12,6 +13,7 @@ from nuclear_energy.config import get_settings
 from nuclear_energy.db import (
     delete_detected_nuclear_transactions,
     fetch_chunks_needing_embeddings,
+    fetch_document_id_map,
     fetch_documents_for_transaction_detection,
     fetch_documents_for_export,
     fetch_documents_without_chunks,
@@ -22,6 +24,7 @@ from nuclear_energy.db import (
     update_chunk_embeddings,
     upsert_documents,
 )
+from nuclear_energy.models import OfficialTransactionRecord
 from nuclear_energy.embeddings import (
     DEFAULT_EMBEDDING_BATCH_SIZE,
     DEFAULT_EMBEDDING_MODEL,
@@ -42,7 +45,9 @@ from nuclear_energy.sources.ember_electricity import (
     EMBER_YEARLY_ELECTRICITY_URL,
     fetch_ember_yearly_electricity,
 )
+from nuclear_energy.sources.eu_ted import fetch_ted_nuclear_procurements
 from nuclear_energy.sources.rss import fetch_rss_feeds
+from nuclear_energy.sources.usaspending import fetch_usaspending_nuclear_awards
 
 
 def _ingest_rss(args: argparse.Namespace) -> int:
@@ -120,6 +125,50 @@ def _ingest_energy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ingest_usaspending_transactions(args: argparse.Namespace) -> int:
+    try:
+        records = fetch_usaspending_nuclear_awards(
+            start_date=args.start_date,
+            end_date=args.end_date,
+            lookback_days=args.lookback_days,
+            limit=args.limit,
+            terms=tuple(args.term) if args.term else (),
+            timeout=args.timeout,
+        )
+    except httpx.HTTPError as exc:
+        print(_describe_source_http_error("USAspending.gov", exc))
+        return 1
+
+    stored_documents, stored_transactions = _store_official_transaction_records(records)
+    print(
+        f"Stored {stored_transactions} USAspending transaction(s) "
+        f"with {stored_documents} official evidence document(s)."
+    )
+    return 0
+
+
+def _ingest_ted_procurements(args: argparse.Namespace) -> int:
+    try:
+        records = fetch_ted_nuclear_procurements(
+            start_date=args.start_date,
+            end_date=args.end_date,
+            lookback_days=args.lookback_days,
+            limit=args.limit,
+            terms=tuple(args.term) if args.term else (),
+            timeout=args.timeout,
+        )
+    except httpx.HTTPError as exc:
+        print(_describe_source_http_error("EU TED", exc))
+        return 1
+
+    stored_documents, stored_transactions = _store_official_transaction_records(records)
+    print(
+        f"Stored {stored_transactions} EU TED procurement transaction(s) "
+        f"with {stored_documents} official evidence document(s)."
+    )
+    return 0
+
+
 def _extract_documents(args: argparse.Namespace) -> int:
     documents = fetch_documents_without_chunks(limit=args.limit, source_name=args.source_name)
     if not documents:
@@ -174,6 +223,21 @@ def _detect_transactions(args: argparse.Namespace) -> int:
         f"removed {removed} previous detected signal(s)."
     )
     return 0
+
+
+def _store_official_transaction_records(records: list[OfficialTransactionRecord]) -> tuple[int, int]:
+    if not records:
+        return 0, 0
+
+    stored_documents = upsert_documents(record.document for record in records)
+    document_ids = fetch_document_id_map(record.document_key for record in records)
+    transactions = [
+        record.to_transaction(document_ids[record.document_key])
+        for record in records
+        if record.document_key in document_ids
+    ]
+    stored_transactions = upsert_nuclear_transactions(transactions)
+    return stored_documents, stored_transactions
 
 
 def _embed_chunks(args: argparse.Namespace) -> int:
@@ -299,6 +363,13 @@ def _describe_source_http_error(source_name: str, exc: httpx.HTTPError) -> str:
     return f"{source_name} API request failed: {exc}"
 
 
+def _date_arg(value: str) -> date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("date must use YYYY-MM-DD format") from exc
+
+
 def _batched(items: list, size: int):
     if size < 1:
         raise SystemExit("--batch-size must be at least 1.")
@@ -356,6 +427,40 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_energy.add_argument("--country", action="append", help="ISO-3 country code. May be repeated.")
     ingest_energy.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout for the CSV request.")
     ingest_energy.set_defaults(func=_ingest_energy)
+
+    ingest_usaspending = subparsers.add_parser(
+        "ingest-usaspending",
+        help="Fetch official US public award records from USAspending.gov and store transaction rows.",
+    )
+    ingest_usaspending.add_argument("--limit", type=int, default=50, help="Maximum awards to store.")
+    ingest_usaspending.add_argument("--start-date", type=_date_arg, help="Earliest obligation date, YYYY-MM-DD.")
+    ingest_usaspending.add_argument("--end-date", type=_date_arg, help="Latest obligation date, YYYY-MM-DD.")
+    ingest_usaspending.add_argument(
+        "--lookback-days",
+        type=int,
+        default=730,
+        help="Days to search back when --start-date is not provided.",
+    )
+    ingest_usaspending.add_argument("--term", action="append", help="Search term. May be repeated.")
+    ingest_usaspending.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout for the API request.")
+    ingest_usaspending.set_defaults(func=_ingest_usaspending_transactions)
+
+    ingest_eu_ted = subparsers.add_parser(
+        "ingest-eu-ted",
+        help="Fetch official European procurement notices from TED and store transaction rows.",
+    )
+    ingest_eu_ted.add_argument("--limit", type=int, default=50, help="Maximum notices to store.")
+    ingest_eu_ted.add_argument("--start-date", type=_date_arg, help="Earliest publication date, YYYY-MM-DD.")
+    ingest_eu_ted.add_argument("--end-date", type=_date_arg, help="Latest publication date, YYYY-MM-DD.")
+    ingest_eu_ted.add_argument(
+        "--lookback-days",
+        type=int,
+        default=730,
+        help="Days to search back when --start-date is not provided.",
+    )
+    ingest_eu_ted.add_argument("--term", action="append", help="Expert-search full-text term. May be repeated.")
+    ingest_eu_ted.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout for the API request.")
+    ingest_eu_ted.set_defaults(func=_ingest_ted_procurements)
 
     extract_documents = subparsers.add_parser(
         "extract-documents",

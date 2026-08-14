@@ -349,12 +349,16 @@ def _render_transactions() -> None:
     columns = st.columns(4)
     columns[0].metric("Transaction Signals", f"{metrics.transaction_count:,}")
     columns[1].metric("Countries", f"{metrics.country_count:,}")
-    columns[2].metric("With Amounts", f"{metrics.with_amount_count:,}")
+    columns[2].metric("Public Amounts Found", f"{metrics.with_amount_count:,}")
     columns[3].metric("Latest Signal", _format_datetime(metrics.latest_transaction_date))
 
     if metrics.transaction_count == 0:
         st.info("No transaction signals detected yet.")
         return
+
+    st.caption(
+        "Official award and tender rows come from public procurement feeds; detected rows come from source documents."
+    )
 
     type_summaries = _load_or_stop(fetch_transaction_type_summaries, selected_iso_code)
     year_summaries = _load_or_stop(fetch_transaction_year_summaries, selected_iso_code)
@@ -363,19 +367,20 @@ def _render_transactions() -> None:
     left, right = st.columns(2)
     with left:
         year_frame = _frame(year_summaries)
+        year_frame["year"] = year_frame["year"].astype(str)
         fig = px.bar(
             year_frame,
             x="year",
             y="transaction_count",
-            color="with_amount_count",
             labels={
                 "year": "Year",
                 "transaction_count": "Signals",
                 "with_amount_count": "With amount",
             },
-            color_continuous_scale="Tealrose",
+            **_amount_color_kwargs(year_frame, "#d8c86b"),
         )
         fig.update_layout(height=340, margin=dict(l=10, r=10, t=24, b=10))
+        fig.update_xaxes(type="category")
         st.plotly_chart(fig, use_container_width=True)
 
     with right:
@@ -387,8 +392,7 @@ def _render_transactions() -> None:
             y="type_label",
             orientation="h",
             labels={"transaction_count": "Signals", "type_label": "Type"},
-            color="with_amount_count",
-            color_continuous_scale="Picnic",
+            **_amount_color_kwargs(type_frame, "#98b9d7"),
         )
         fig.update_layout(height=340, margin=dict(l=10, r=10, t=24, b=10), yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig, use_container_width=True)
@@ -400,13 +404,12 @@ def _render_transactions() -> None:
                 country_frame.head(20),
                 x="country_name",
                 y="transaction_count",
-                color="with_amount_count",
                 labels={
                     "country_name": "Country",
                     "transaction_count": "Signals",
                     "with_amount_count": "With amount",
                 },
-                color_continuous_scale="Tealrose",
+                **_amount_color_kwargs(country_frame, "#d8c86b"),
             )
             fig.update_layout(height=340, margin=dict(l=10, r=10, t=24, b=10))
             st.plotly_chart(fig, use_container_width=True)
@@ -414,12 +417,14 @@ def _render_transactions() -> None:
     transaction_frame = _frame(recent_transactions)
     if not transaction_frame.empty:
         transaction_frame["transaction_type"] = transaction_frame["transaction_type"].map(_transaction_type_label)
+        transaction_frame["stage"] = transaction_frame["stage"].map(_stage_label)
         display_frame = transaction_frame[
             [
                 "transaction_date",
                 "country_name",
                 "plant_name",
                 "transaction_type",
+                "stage",
                 "amount_text",
                 "confidence",
                 "summary",
@@ -437,6 +442,8 @@ def _render_transactions() -> None:
                 "source_url": "url",
             }
         )
+        display_frame["plant"] = display_frame["plant"].fillna("")
+        display_frame["amount"] = display_frame["amount"].fillna("not public")
         st.dataframe(
             display_frame,
             use_container_width=True,
@@ -635,6 +642,23 @@ def _format_trade_balance(value) -> str:
 
 def _transaction_type_label(value: str) -> str:
     return value.replace("_", " ").title()
+
+
+def _stage_label(value: str) -> str:
+    return value.replace("_", " ").title()
+
+
+def _has_positive_amount_counts(frame: pd.DataFrame) -> bool:
+    return bool("with_amount_count" in frame.columns and frame["with_amount_count"].fillna(0).max() > 0)
+
+
+def _amount_color_kwargs(frame: pd.DataFrame, fallback_color: str) -> dict:
+    if _has_positive_amount_counts(frame):
+        return {
+            "color": "with_amount_count",
+            "color_continuous_scale": "Tealrose",
+        }
+    return {"color_discrete_sequence": [fallback_color]}
 
 
 def _selected_country_iso_code(selected_country: str) -> str | None:

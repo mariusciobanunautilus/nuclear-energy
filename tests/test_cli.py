@@ -47,3 +47,33 @@ def test_parser_can_keep_existing_transaction_rows():
     args = build_parser().parse_args(["detect-transactions", "--keep-existing"])
 
     assert args.replace_detected is False
+
+
+def test_parser_accepts_usaspending_ingest_options():
+    args = build_parser().parse_args(
+        [
+            "ingest-usaspending",
+            "--limit",
+            "10",
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-08-14",
+            "--term",
+            "HALEU",
+        ]
+    )
+
+    assert args.command == "ingest-usaspending"
+    assert args.limit == 10
+    assert args.start_date.isoformat() == "2026-01-01"
+    assert args.end_date.isoformat() == "2026-08-14"
+    assert args.term == ["HALEU"]
+
+
+def test_parser_accepts_eu_ted_ingest_options():
+    args = build_parser().parse_args(["ingest-eu-ted", "--limit", "15", "--term", "uranium"])
+
+    assert args.command == "ingest-eu-ted"
+    assert args.limit == 15
+    assert args.term == ["uranium"]

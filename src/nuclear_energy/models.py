@@ -14,6 +14,12 @@ class SourceKind(str, Enum):
     congress = "congress"
     federal_register = "federal_register"
     regulations_gov = "regulations_gov"
+    usaspending = "usaspending"
+    eu_ted = "eu_ted"
+    sec_edgar = "sec_edgar"
+    iaea_pris = "iaea_pris"
+    eia = "eia"
+    entsoe = "entsoe"
 
 
 class RawDocument(BaseModel):
@@ -27,6 +33,7 @@ class RawDocument(BaseModel):
     content: Optional[str] = None
     authors: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def url_text(self) -> str:
@@ -72,3 +79,54 @@ class NuclearTransaction(BaseModel):
     matched_terms: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0, le=1)
     raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class OfficialTransactionRecord(BaseModel):
+    document: RawDocument
+    transaction_external_id: str = Field(min_length=1)
+    transaction_date: Optional[datetime] = None
+    country_iso_code: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    country_name: Optional[str] = None
+    plant_name: Optional[str] = None
+    project_name: Optional[str] = None
+    transaction_type: str = Field(min_length=1)
+    stage: str
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    source_name: str = Field(min_length=1)
+    source_url: str = Field(min_length=1)
+    amount_text: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    counterparties: list[str] = Field(default_factory=list)
+    matched_terms: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def document_key(self) -> tuple[str, str]:
+        return (self.document.source_kind.value, self.document.external_id)
+
+    def to_transaction(self, document_id: str) -> NuclearTransaction:
+        return NuclearTransaction(
+            external_id=self.transaction_external_id,
+            document_id=document_id,
+            transaction_date=self.transaction_date,
+            country_iso_code=self.country_iso_code,
+            country_name=self.country_name,
+            plant_name=self.plant_name,
+            project_name=self.project_name,
+            transaction_type=self.transaction_type,
+            stage=self.stage,
+            title=self.title,
+            summary=self.summary,
+            source_name=self.source_name,
+            source_url=self.source_url,
+            amount_text=self.amount_text,
+            amount=self.amount,
+            currency=self.currency,
+            counterparties=self.counterparties,
+            matched_terms=self.matched_terms,
+            confidence=self.confidence,
+            raw_payload=self.raw_payload,
+        )

@@ -14,6 +14,7 @@ The project currently has a Supabase/Postgres schema for nuclear reference data,
 - Semantic search CLI for finding relevant chunks by meaning.
 - Public country electricity metrics from Ember, including nuclear generation, nuclear capacity, electricity demand, total generation, and net electricity imports/exports.
 - Rule-based public transaction detection from stored documents, linked back to source articles and regulatory records.
+- Official structured procurement feeds from USAspending.gov and EU TED, stored as transaction rows with source evidence documents.
 - Streamlit dashboard for database status, energy-system metrics, transaction signals, keyword search, and exports.
 
 ## Setup
@@ -47,6 +48,13 @@ Load public annual electricity-system data.
 
 ```bash
 nuclear-energy ingest-energy --since-year 2000
+```
+
+Load official structured public procurement and award feeds.
+
+```bash
+nuclear-energy ingest-usaspending --limit 50
+nuclear-energy ingest-eu-ted --limit 50
 ```
 
 6. Extract and chunk stored articles.

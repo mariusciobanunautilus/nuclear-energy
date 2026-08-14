@@ -25,6 +25,12 @@ document_source_kind = ENUM(
     "congress",
     "federal_register",
     "regulations_gov",
+    "usaspending",
+    "eu_ted",
+    "sec_edgar",
+    "iaea_pris",
+    "eia",
+    "entsoe",
     name="document_source_kind",
     schema="public",
     create_type=False,
@@ -460,6 +466,42 @@ def upsert_nuclear_transactions(transactions: Iterable[NuclearTransaction]) -> i
     return len(rows)
 
 
+def fetch_document_id_map(document_keys: Iterable[tuple[str, str]]) -> dict[tuple[str, str], str]:
+    keys = list(dict.fromkeys(document_keys))
+    if not keys:
+        return {}
+
+    conditions = []
+    params: dict[str, object] = {}
+    for index, (source_kind, external_id) in enumerate(keys):
+        conditions.append(
+            f"""
+            (
+              source_kind = cast(:source_kind_{index} as public.document_source_kind)
+              and external_id = :external_id_{index}
+            )
+            """
+        )
+        params[f"source_kind_{index}"] = source_kind
+        params[f"external_id_{index}"] = external_id
+
+    statement = sql_text(
+        f"""
+        select id, source_kind::text as source_kind, external_id
+        from public.ingested_documents
+        where {" or ".join(conditions)}
+        """
+    )
+
+    with Session(get_engine()) as session:
+        rows = session.execute(statement, params).mappings().all()
+
+    return {
+        (row["source_kind"], row["external_id"]): str(row["id"])
+        for row in rows
+    }
+
+
 def delete_detected_nuclear_transactions(source_name: Optional[str] = None) -> int:
     conditions = ["stage = 'detected'"]
     params: dict[str, object] = {}
@@ -701,7 +743,7 @@ def fetch_documents_for_transaction_detection(
     if limit < 1:
         return []
 
-    conditions = []
+    conditions = ["d.source_kind::text not in ('usaspending', 'eu_ted')"]
     params: dict[str, object] = {"limit": limit}
     if source_name:
         conditions.append("d.source_name = :source_name")
