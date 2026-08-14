@@ -369,9 +369,6 @@ def _render_energy_system() -> None:
     columns[4].metric("Electricity Demand", _format_twh(metrics.electricity_demand_twh))
 
     summary_frame["net_trade"] = summary_frame["net_electricity_imports_twh"].map(_format_trade_balance)
-    reactor_technology_rows = _load_or_stop(fetch_reactor_technology_summaries)
-    technology_summary = _technology_mix_summary_frame(_frame(reactor_technology_rows), summary_frame)
-
     left, right = st.columns([3, 2])
     with left:
         comparison_frame = summary_frame.head(20)
@@ -441,15 +438,6 @@ def _render_energy_system() -> None:
         st.info("No plant-level reactor technology rows are loaded for this country yet.")
     else:
         st.dataframe(selected_technology_frame, use_container_width=True, hide_index=True)
-
-    with st.expander("All Country Technology Mix", expanded=False):
-        st.caption(
-            "Country-level reactor technology mix from loaded plant records. Rows marked not loaded have electricity data but no plant-level technology records yet."
-        )
-        if technology_summary.empty:
-            st.info("No reactor technology rows are loaded yet.")
-        else:
-            st.dataframe(technology_summary, use_container_width=True, hide_index=True)
 
     st.markdown("#### Period Comparison")
     comparison_mode = st.selectbox(
@@ -1358,75 +1346,6 @@ def _capacity_chart_frame(summary_frame: pd.DataFrame, limit: int = 20) -> pd.Da
         return frame
     frame["country_label"] = frame["country_name"] + " (" + frame["iso_code"] + ")"
     return frame
-
-
-def _technology_mix_summary_frame(frame: pd.DataFrame, country_frame: pd.DataFrame | None = None) -> pd.DataFrame:
-    if frame.empty:
-        if country_frame is None or country_frame.empty:
-            return pd.DataFrame()
-        summary = country_frame[["country_name", "iso_code"]].drop_duplicates().copy()
-        summary["plants"] = 0
-        summary["reactors"] = 0
-        summary["capacity_mwe"] = "n/a"
-        summary["technology_mix"] = "not loaded"
-        return summary.rename(columns={"country_name": "country", "iso_code": "iso"})
-
-    working = frame.copy()
-    working["technology_code"] = working["technology_code"].fillna("Unknown")
-    working["net_capacity_mwe"] = pd.to_numeric(working["net_capacity_mwe"], errors="coerce")
-    grouped = (
-        working.groupby(["country_name", "iso_code", "technology_code"], dropna=False)
-        .agg(
-            reactor_count=("reactor_name", "count"),
-            net_capacity_mwe=("net_capacity_mwe", "sum"),
-        )
-        .reset_index()
-        .sort_values(["country_name", "technology_code"])
-    )
-    grouped["technology_part"] = grouped.apply(
-        lambda row: f"{row['technology_code']}: {int(row['reactor_count'])}",
-        axis=1,
-    )
-    summary = (
-        grouped.groupby(["country_name", "iso_code"], dropna=False)
-        .agg(
-            reactors=("reactor_count", "sum"),
-            net_capacity_mwe=("net_capacity_mwe", "sum"),
-            technology_mix=("technology_part", lambda values: ", ".join(values)),
-        )
-        .reset_index()
-    )
-    plant_counts = (
-        working.groupby(["country_name", "iso_code"], dropna=False)["plant_name"]
-        .nunique()
-        .rename("plants")
-        .reset_index()
-    )
-    summary = (
-        summary.merge(plant_counts, on=["country_name", "iso_code"], how="left")
-        .sort_values(["reactors", "country_name"], ascending=[False, True])
-    )
-    summary["capacity_mwe"] = summary["net_capacity_mwe"].map(_format_mwe)
-    summary = summary[
-        ["country_name", "iso_code", "plants", "reactors", "capacity_mwe", "technology_mix"]
-    ].rename(
-        columns={
-            "country_name": "country",
-            "iso_code": "iso",
-        }
-    )
-    if country_frame is None or country_frame.empty:
-        return summary
-
-    countries = country_frame[["country_name", "iso_code"]].drop_duplicates().rename(
-        columns={"country_name": "country", "iso_code": "iso"}
-    )
-    summary = countries.merge(summary, on=["country", "iso"], how="left")
-    summary["plants"] = summary["plants"].fillna(0).astype(int)
-    summary["reactors"] = summary["reactors"].fillna(0).astype(int)
-    summary["capacity_mwe"] = summary["capacity_mwe"].fillna("n/a")
-    summary["technology_mix"] = summary["technology_mix"].fillna("not loaded")
-    return summary.sort_values(["reactors", "country"], ascending=[False, True])
 
 
 def _technology_detail_frame(frame: pd.DataFrame) -> pd.DataFrame:
