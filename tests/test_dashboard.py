@@ -7,6 +7,7 @@ import pandas as pd
 
 from nuclear_energy.dashboard import (
     _amount_color_kwargs,
+    _capacity_chart_frame,
     _daily_brief_markdown,
     _daily_tape_readout,
     _daily_window_start,
@@ -220,6 +221,21 @@ def test_amount_color_helpers_use_amounts_when_available() -> None:
 
     assert _has_positive_amount_counts(frame) is True
     assert _amount_color_kwargs(frame, "#abc")["color"] == "with_amount_count"
+
+
+def test_capacity_chart_frame_ranks_by_capacity_and_labels_united_states() -> None:
+    frame = pd.DataFrame(
+        [
+            {"country_name": "China", "iso_code": "CHN", "nuclear_capacity_gw": 63.0},
+            {"country_name": "United States", "iso_code": "USA", "nuclear_capacity_gw": 96.9},
+            {"country_name": "France", "iso_code": "FRA", "nuclear_capacity_gw": 61.0},
+        ]
+    )
+
+    result = _capacity_chart_frame(frame)
+
+    assert result.iloc[0]["country_label"] == "United States (USA)"
+    assert result["country_label"].tolist() == ["United States (USA)", "China (CHN)", "France (FRA)"]
 
 
 def test_secret_matches_requires_exact_pin() -> None:

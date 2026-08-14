@@ -388,25 +388,26 @@ def _render_energy_system() -> None:
         st.plotly_chart(fig, use_container_width=True)
 
     with right:
-        capacity_frame = (
-            summary_frame.dropna(subset=["nuclear_capacity_gw"])
-            .sort_values(["nuclear_capacity_gw", "country_name"], ascending=[False, True])
-            .head(20)
-        )
+        capacity_frame = _capacity_chart_frame(summary_frame)
         fig = px.bar(
             capacity_frame,
             x="nuclear_capacity_gw",
-            y="country_name",
+            y="country_label",
             color="estimated_capacity_factor_percent",
             orientation="h",
             labels={
-                "country_name": "Country",
+                "country_label": "Country",
                 "nuclear_capacity_gw": "Nuclear capacity (GW)",
                 "estimated_capacity_factor_percent": "Usage (%)",
             },
             color_continuous_scale="Picnic",
         )
-        fig.update_layout(height=360, margin=dict(l=10, r=10, t=24, b=10), yaxis={"categoryorder": "total ascending"})
+        fig.update_layout(height=390, margin=dict(l=10, r=10, t=36, b=10))
+        fig.update_yaxes(
+            categoryorder="array",
+            categoryarray=capacity_frame["country_label"].iloc[::-1].tolist(),
+            automargin=True,
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     country_options = [f"{row.country_name} ({row.iso_code})" for row in summaries]
@@ -1312,6 +1313,19 @@ def _add_transaction_markers(fig, transactions, trend_frame: pd.DataFrame) -> No
         text=marker_frame["label"],
         hovertemplate="%{text}<extra></extra>",
     )
+
+
+def _capacity_chart_frame(summary_frame: pd.DataFrame, limit: int = 20) -> pd.DataFrame:
+    frame = (
+        summary_frame.dropna(subset=["nuclear_capacity_gw"])
+        .sort_values(["nuclear_capacity_gw", "country_name"], ascending=[False, True])
+        .head(limit)
+        .copy()
+    )
+    if frame.empty:
+        return frame
+    frame["country_label"] = frame["country_name"] + " (" + frame["iso_code"] + ")"
+    return frame
 
 
 def _latest_energy_record(records):
