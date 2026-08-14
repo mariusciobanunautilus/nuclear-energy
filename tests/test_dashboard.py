@@ -11,6 +11,7 @@ from nuclear_energy.dashboard import (
     _format_trade_balance,
     _has_positive_amount_counts,
     _missing_workflow_secret_names,
+    _overview_readout,
     _selected_country_iso_code,
     _secret_matches,
     _stage_label,
@@ -34,6 +35,36 @@ def test_format_trade_balance_labels_net_imports_and_exports() -> None:
     assert _format_trade_balance(2.5) == "2.5 TWh net imports"
     assert _format_trade_balance(-3.25) == "3.2 TWh net exports"
     assert _format_trade_balance(0) == "balanced"
+
+
+def test_overview_readout_explains_source_coverage_and_readiness() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "source_name": "EUR-Lex",
+                "document_count": 5,
+                "documents_with_content": 5,
+                "chunk_count": 5,
+                "embedded_chunk_count": 0,
+                "metadata_only": 0,
+            },
+            {
+                "source_name": "IAEA Top News",
+                "document_count": 5,
+                "documents_with_content": 0,
+                "chunk_count": 0,
+                "embedded_chunk_count": 0,
+                "metadata_only": 5,
+            },
+        ]
+    )
+
+    readout = _overview_readout(frame)
+
+    assert "10 public documents" in readout
+    assert "5 have usable text (50.0%)" in readout
+    assert "0 chunks are AI-ready (0.0%)" in readout
+    assert "IAEA Top News" in readout
 
 
 def test_transaction_helpers_format_labels_and_country_selection() -> None:

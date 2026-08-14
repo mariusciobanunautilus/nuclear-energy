@@ -96,33 +96,85 @@ def _render_overview(source_summaries) -> None:
         st.info("No ingested documents yet.")
         return
 
+    st.info(
+        "Overview shows source coverage and processing readiness: what public material was collected, "
+        "where text extraction worked, and what is ready for search."
+    )
     source_frame["waiting_for_embeddings"] = (
         source_frame["chunk_count"] - source_frame["embedded_chunk_count"]
     ).clip(lower=0)
+    source_frame["metadata_only"] = (
+        source_frame["document_count"] - source_frame["documents_with_content"]
+    ).clip(lower=0)
+    source_frame["text_coverage"] = source_frame.apply(
+        lambda row: _ratio_percent(row["documents_with_content"], row["document_count"]),
+        axis=1,
+    )
+    source_frame["embedding_coverage"] = source_frame.apply(
+        lambda row: _ratio_percent(row["embedded_chunk_count"], row["chunk_count"]),
+        axis=1,
+    )
+    st.caption(_overview_readout(source_frame))
 
     left, right = st.columns(2)
     with left:
-        fig = px.bar(
-            source_frame,
-            x="source_name",
-            y="document_count",
-            color="source_kind",
-            labels={"source_name": "Source", "document_count": "Documents", "source_kind": "Kind"},
-            color_discrete_sequence=px.colors.qualitative.Safe,
+        coverage_frame = source_frame[
+            ["source_name", "documents_with_content", "metadata_only"]
+        ].melt(
+            id_vars="source_name",
+            value_vars=["documents_with_content", "metadata_only"],
+            var_name="status",
+            value_name="documents",
         )
-        fig.update_layout(height=360, margin=dict(l=10, r=10, t=24, b=10), showlegend=True)
+        coverage_frame["status"] = coverage_frame["status"].map(
+            {
+                "documents_with_content": "Text extracted",
+                "metadata_only": "Metadata only",
+            }
+        )
+        fig = px.bar(
+            coverage_frame,
+            x="source_name",
+            y="documents",
+            color="status",
+            labels={"source_name": "Source", "documents": "Documents", "status": "Status"},
+            color_discrete_sequence=["#77c8a0", "#7d8796"],
+        )
+        fig.update_layout(
+            title_text="Source coverage",
+            height=360,
+            margin=dict(l=10, r=10, t=44, b=10),
+            showlegend=True,
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     with right:
-        chunk_frame = source_frame[["source_name", "embedded_chunk_count", "waiting_for_embeddings"]]
+        chunk_frame = source_frame[["source_name", "embedded_chunk_count", "waiting_for_embeddings"]].melt(
+            id_vars="source_name",
+            value_vars=["embedded_chunk_count", "waiting_for_embeddings"],
+            var_name="status",
+            value_name="chunks",
+        )
+        chunk_frame["status"] = chunk_frame["status"].map(
+            {
+                "embedded_chunk_count": "AI-ready chunks",
+                "waiting_for_embeddings": "Waiting for embeddings",
+            }
+        )
         fig = px.bar(
             chunk_frame,
             x="source_name",
-            y=["embedded_chunk_count", "waiting_for_embeddings"],
-            labels={"source_name": "Source", "value": "Chunks", "variable": "Status"},
+            y="chunks",
+            color="status",
+            labels={"source_name": "Source", "chunks": "Chunks", "status": "Status"},
             color_discrete_sequence=["#2f7d6d", "#9a6b22"],
         )
-        fig.update_layout(height=360, margin=dict(l=10, r=10, t=24, b=10), showlegend=True)
+        fig.update_layout(
+            title_text="Search readiness",
+            height=360,
+            margin=dict(l=10, r=10, t=44, b=10),
+            showlegend=True,
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     display_frame = source_frame[
@@ -131,8 +183,11 @@ def _render_overview(source_summaries) -> None:
             "source_kind",
             "document_count",
             "documents_with_content",
+            "text_coverage",
             "chunk_count",
             "embedded_chunk_count",
+            "waiting_for_embeddings",
+            "embedding_coverage",
             "latest_published_at",
         ]
     ].rename(
@@ -141,11 +196,17 @@ def _render_overview(source_summaries) -> None:
             "source_kind": "kind",
             "document_count": "documents",
             "documents_with_content": "with_text",
+            "text_coverage": "text_coverage_pct",
             "chunk_count": "chunks",
             "embedded_chunk_count": "embedded",
+            "waiting_for_embeddings": "waiting",
+            "embedding_coverage": "ai_ready_pct",
             "latest_published_at": "latest",
         }
     )
+    display_frame["text_coverage_pct"] = display_frame["text_coverage_pct"].map(_format_percent_number)
+    display_frame["ai_ready_pct"] = display_frame["ai_ready_pct"].map(_format_percent_number)
+    st.markdown("#### Source Health")
     st.dataframe(display_frame, use_container_width=True, hide_index=True)
 
 
@@ -736,6 +797,28 @@ def _stage_label(value: str) -> str:
     return value.replace("_", " ").title()
 
 
+def _overview_readout(source_frame: pd.DataFrame) -> str:
+    documents = int(source_frame["document_count"].sum())
+    with_text = int(source_frame["documents_with_content"].sum())
+    chunks = int(source_frame["chunk_count"].sum())
+    embedded = int(source_frame["embedded_chunk_count"].sum())
+    sources = int(len(source_frame))
+    text_rate = _ratio_percent(with_text, documents)
+    ai_rate = _ratio_percent(embedded, chunks)
+
+    metadata_only_sources = source_frame[source_frame["metadata_only"] > 0]["source_name"].tolist()
+    metadata_note = (
+        f" Text extraction needs attention for: {', '.join(metadata_only_sources)}."
+        if metadata_only_sources
+        else " Text extraction is complete for all current sources."
+    )
+    return (
+        f"{documents:,} public documents are tracked across {sources:,} sources. "
+        f"{with_text:,} have usable text ({_format_percent_number(text_rate)}), producing {chunks:,} search chunks. "
+        f"{embedded:,} chunks are AI-ready ({_format_percent_number(ai_rate)}).{metadata_note}"
+    )
+
+
 def _transaction_readout(metrics) -> str:
     signal_word = _plural(metrics.transaction_count, "signal")
     signal_verb = "is" if metrics.transaction_count == 1 else "are"
@@ -755,6 +838,20 @@ def _transaction_readout(metrics) -> str:
 
 def _plural(count: int, singular: str, plural: str | None = None) -> str:
     return singular if count == 1 else plural or f"{singular}s"
+
+
+def _ratio_percent(numerator, denominator) -> float:
+    if denominator is None or pd.isna(denominator) or float(denominator) == 0:
+        return 0.0
+    if numerator is None or pd.isna(numerator):
+        return 0.0
+    return float(numerator) / float(denominator) * 100
+
+
+def _format_percent_number(value) -> str:
+    if value is None or pd.isna(value):
+        return "0.0%"
+    return f"{float(value):.1f}%"
 
 
 def _has_positive_amount_counts(frame: pd.DataFrame) -> bool:
