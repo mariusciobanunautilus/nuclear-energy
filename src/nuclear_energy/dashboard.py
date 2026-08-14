@@ -9,7 +9,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from nuclear_energy.automation import GITHUB_ACTIONS_URL, WorkflowDispatchError, trigger_github_workflow
+from nuclear_energy.automation import WorkflowDispatchError, trigger_github_workflow
 from nuclear_energy.config import get_settings
 from nuclear_energy.db import (
     fetch_dashboard_metrics,
@@ -1183,23 +1183,23 @@ def _render_exports(source_names: list[str]) -> None:
 def _render_automation() -> None:
     token = _secret_value("GITHUB_ACTIONS_TOKEN")
     expected_pin = _secret_value("WORKFLOW_TRIGGER_PIN")
-    selected_mode = st.radio("Workflow", list(WORKFLOW_MODES), horizontal=True)
+    selected_mode = st.radio("Refresh scope", list(WORKFLOW_MODES), horizontal=True)
     pin = st.text_input("PIN", type="password")
 
     missing_secrets = _missing_workflow_secret_names(token, expected_pin)
     if missing_secrets:
-        st.info("Workflow trigger is not configured yet.")
+        st.info("Data refresh is not configured yet.")
         st.caption("Missing Streamlit secrets: " + ", ".join(f"`{name}`" for name in missing_secrets))
         return
 
-    if st.button("Run workflow", type="primary", use_container_width=True):
+    if st.button("Refresh data", type="primary", use_container_width=True):
         if not _secret_matches(pin, expected_pin):
             st.error("Incorrect PIN.")
             return
 
-        with st.spinner("Starting workflow..."):
+        with st.spinner("Starting data refresh..."):
             try:
-                result = trigger_github_workflow(
+                trigger_github_workflow(
                     token=token,
                     owner="mariusciobanunautilus",
                     repo="nuclear-energy",
@@ -1208,14 +1208,17 @@ def _render_automation() -> None:
                     inputs={"mode": WORKFLOW_MODES[selected_mode]},
                 )
             except WorkflowDispatchError as exc:
-                st.error(str(exc))
+                st.error("Data refresh could not be started.")
+                with st.expander("Technical detail"):
+                    st.code(str(exc))
                 return
             except Exception as exc:
-                st.error(f"GitHub request failed: {exc}")
+                st.error("Data refresh could not be started.")
+                with st.expander("Technical detail"):
+                    st.code(str(exc))
                 return
 
-        st.success("Workflow started.")
-        st.markdown(f"[Open GitHub Actions]({result.html_url or GITHUB_ACTIONS_URL})")
+        st.success("Data refresh started. New documents and events will appear after the background job finishes.")
 
 
 def _load_or_stop(func, *args, **kwargs):
