@@ -428,6 +428,18 @@ def _render_energy_system() -> None:
     country_columns[3].metric("Nuclear Capacity", _format_gw(latest.nuclear_capacity_gw))
     country_columns[4].metric("Usage", _format_percent(latest.estimated_capacity_factor_percent))
 
+    current_events = _load_or_stop(
+        fetch_recent_events,
+        limit=8,
+        country_iso_code=selected_iso_code,
+        since=datetime.now(timezone.utc) - timedelta(days=45),
+    )
+    st.markdown(f"#### {latest.country_name} Current Nuclear Status")
+    st.caption(
+        "Recent source-backed events for the selected country. Annual electricity data remains historical; this panel captures current outages, restarts, policy moves, and operational changes."
+    )
+    _render_energy_current_events(current_events)
+
     selected_technology_rows = _load_or_stop(fetch_reactor_technology_summaries, selected_iso_code)
     selected_technology_frame = _technology_detail_frame(_frame(selected_technology_rows))
     st.markdown(f"#### {latest.country_name} Reactor Technologies")
@@ -786,6 +798,55 @@ def _render_transaction_evidence_table(recent_transactions) -> None:
             "url": st.column_config.LinkColumn("source link"),
         },
         )
+
+
+def _render_energy_current_events(events) -> None:
+    display_frame = _energy_current_events_frame(events)
+    if display_frame.empty:
+        st.info("No recent source-backed nuclear status events are loaded for this country yet.")
+        return
+
+    st.dataframe(
+        display_frame,
+        use_container_width=True,
+        hide_index=True,
+        height=260,
+        column_config={
+            "url": st.column_config.LinkColumn("source link"),
+        },
+    )
+
+
+def _energy_current_events_frame(events) -> pd.DataFrame:
+    event_frame = _frame(events)
+    if event_frame.empty:
+        return pd.DataFrame()
+
+    event_frame["event_type"] = event_frame["event_type"].map(_event_type_label)
+    display_frame = event_frame[
+        [
+            "event_date",
+            "event_type",
+            "project_name",
+            "title",
+            "summary",
+            "source_name",
+            "source_url",
+        ]
+    ].rename(
+        columns={
+            "event_date": "date",
+            "event_type": "type",
+            "project_name": "plant_or_project",
+            "title": "event",
+            "summary": "summary",
+            "source_name": "source",
+            "source_url": "url",
+        }
+    )
+    display_frame["date"] = display_frame["date"].map(_format_date)
+    display_frame["plant_or_project"] = display_frame["plant_or_project"].fillna("country-wide")
+    return display_frame
 
 
 def _render_event_table(events, *, rows: int) -> None:
@@ -1510,6 +1571,14 @@ def _format_datetime(value: datetime | None) -> str:
     if value is None or pd.isna(value):
         return ""
     return value.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_date(value) -> str:
+    if value is None or pd.isna(value):
+        return "date n/a"
+    if isinstance(value, str):
+        return value[:10]
+    return value.strftime("%Y-%m-%d")
 
 
 def _format_year(value: int | None) -> str:

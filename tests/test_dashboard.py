@@ -5,12 +5,14 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from nuclear_energy.db import EventListItem
 from nuclear_energy.dashboard import (
     _amount_color_kwargs,
     _capacity_chart_frame,
     _daily_brief_markdown,
     _daily_tape_readout,
     _daily_window_start,
+    _energy_current_events_frame,
     _event_status_label,
     _event_type_label,
     _event_correction_payload,
@@ -268,6 +270,37 @@ def test_technology_detail_frame_labels_missing_technology() -> None:
         "source",
         "source_url",
     ]
+
+
+def test_energy_current_events_frame_formats_compact_status_rows() -> None:
+    events = [
+        EventListItem(
+            id="event-1",
+            event_date=datetime(2026, 8, 13, 10, 0, tzinfo=timezone.utc),
+            event_type="operations",
+            event_status="detected",
+            review_status="unreviewed",
+            source_tier="tier_2_official_document",
+            country_iso_code="ROU",
+            country_name="Romania",
+            project_name=None,
+            title="Cernavoda Unit 2 shut down",
+            summary="Low Danube levels forced a controlled shutdown.",
+            amount_text=None,
+            materiality_flags=[],
+            themes=["operations"],
+            source_confidence=0.9,
+            evidence_count=1,
+            source_name="Nuclearelectrica",
+            source_url="https://example.test/cernavoda",
+        )
+    ]
+
+    result = _energy_current_events_frame(events)
+
+    assert result.iloc[0]["date"] == "2026-08-13"
+    assert result.iloc[0]["plant_or_project"] == "country-wide"
+    assert result.iloc[0]["event"] == "Cernavoda Unit 2 shut down"
 
 
 def test_secret_matches_requires_exact_pin() -> None:
