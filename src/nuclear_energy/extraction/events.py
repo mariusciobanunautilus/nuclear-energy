@@ -122,7 +122,7 @@ EVENT_TERM_GROUPS = (
         "reported",
     ),
     EventTermGroup(
-        "commissioning_milestone",
+        "reported_development",
         (
             "installed",
             "module installed",
@@ -345,7 +345,7 @@ def _event_type_priority(event_type: str) -> int:
     priorities = {
         "license_approval": 12,
         "construction_start": 11,
-        "commissioning_milestone": 10,
+        "reported_development": 10,
         "sanction_or_export_control": 10,
         "delay_or_cost_overrun": 9,
         "license_application": 8,

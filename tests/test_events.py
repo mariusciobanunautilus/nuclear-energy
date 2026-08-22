@@ -110,7 +110,7 @@ def test_detect_nuclear_events_captures_commissioning_milestones():
 
     assert len(events) == 1
     event = events[0]
-    assert event.event_type == "commissioning_milestone"
+    assert event.event_type == "reported_development"
     assert event.country_iso_code == "CHN"
     assert "operations" in event.themes
 
