@@ -31,8 +31,8 @@ python -m pip install -e ".[dev]"
 
 3. Copy `.env.example` to `.env.local` and fill in missing values.
 4. Start or connect to the Supabase database.
-5. Run an RSS ingestion pass. By default, this pulls a curated public feed set covering
-   World Nuclear News, ANS Nuclear Newswire, IAEA top news, NRC news releases, and NRC plant status.
+5. Run an RSS ingestion pass. By default, this pulls a curated public and country feed set covering
+   global nuclear media, IAEA, NRC, CNSC, UK ONR, France ASNR, and Nuclearelectrica.
    Override `RSS_FEEDS` when you want a narrower or custom list.
 
 ```bash
@@ -111,7 +111,7 @@ WATCHLIST_ENTITIES = "Westinghouse Electric Company,Cameco,Centrus Energy,Orano,
 WATCHLIST_PROJECTS = "Cernavoda,Dukovany,Sizewell C,Hinkley Point C,Vogtle,Bruce"
 WATCHLIST_COUNTRIES = "USA,CAN,FRA,GBR,ROU,CZE,POL,BGR,UKR,RUS,CHN,JPN,KOR,KAZ"
 WATCHLIST_THEMES = "fuel_cycle,policy,regulation,project_stage,construction,operations,project_risk,supply_risk"
-RSS_FEEDS = "https://world-nuclear-news.org/rss,https://www.ans.org/news/feed/,https://www.iaea.org/feeds/topnews,https://www.nrc.gov/public-involve/rss?feed=news,https://www.nrc.gov/public-involve/rss?feed=plant-status"
+# See .env.example for the default country-aware RSS_FEEDS list.
 ```
 
 7. Embed stored chunks and try semantic search.

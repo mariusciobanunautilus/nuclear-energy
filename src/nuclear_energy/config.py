@@ -16,6 +16,14 @@ DEFAULT_RSS_FEEDS = [
     "https://www.iaea.org/feeds/topnews",
     "https://www.nrc.gov/public-involve/rss?feed=news",
     "https://www.nrc.gov/public-involve/rss?feed=plant-status",
+    "https://api.io.canada.ca/io-server/gc/news/en/v2?dept=canadiannuclearsafetycommission&sort=publishedDate&orderBy=desc&publishedDate%3E=2021-07-23&pick=25&format=atom&atomtitle=Canadian%20Nuclear%20Safety%20Commission",
+    "https://www.onr.org.uk/rss-news",
+    "https://www.onr.org.uk/rss-global",
+    "https://reglementation-controle.asnr.fr/rss/avis-incidents-INB",
+    "https://reglementation-controle.asnr.fr/rss/arrets_reacteur",
+    "https://reglementation-controle.asnr.fr/rss/lettre-de-suite-inspection-INB",
+    "https://www.nuclearelectrica.ro/snn/en/feed/",
+    "https://www.nuclearelectrica.ro/ir/en/feed/",
 ]
 DEFAULT_WATCHLIST_ENTITIES = [
     "Westinghouse Electric Company",

@@ -36,6 +36,9 @@ def test_settings_uses_default_rss_feeds(monkeypatch):
         assert "https://www.iaea.org/feeds/topnews" in settings.rss_feeds
         assert "https://www.nrc.gov/public-involve/rss?feed=news" in settings.rss_feeds
         assert "https://www.nrc.gov/public-involve/rss?feed=plant-status" in settings.rss_feeds
+        assert "https://www.onr.org.uk/rss-news" in settings.rss_feeds
+        assert "https://reglementation-controle.asnr.fr/rss/arrets_reacteur" in settings.rss_feeds
+        assert "https://www.nuclearelectrica.ro/snn/en/feed/" in settings.rss_feeds
     finally:
         config.get_settings.cache_clear()
 

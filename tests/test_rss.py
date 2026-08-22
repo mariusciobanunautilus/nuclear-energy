@@ -47,3 +47,21 @@ def test_fetch_rss_feed_uses_known_title_when_feed_title_is_missing(monkeypatch)
     documents = rss.fetch_rss_feed("https://www.nrc.gov/public-involve/rss?feed=plant-status", limit=1)
 
     assert documents[0].source_name == "NRC Power Reactor Status"
+
+
+def test_fetch_rss_feed_prefers_known_title_over_generic_feed_title(monkeypatch):
+    class Feed:
+        feed = {"title": "Rss News"}
+        entries = [
+            {
+                "id": "onr-1",
+                "title": "ONR update",
+                "link": "https://www.onr.org.uk/update",
+            },
+        ]
+
+    monkeypatch.setattr(rss.feedparser, "parse", lambda _url: Feed())
+
+    documents = rss.fetch_rss_feed("https://www.onr.org.uk/rss-news", limit=1)
+
+    assert documents[0].source_name == "UK Office for Nuclear Regulation News"

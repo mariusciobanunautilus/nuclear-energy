@@ -575,10 +575,20 @@ def _document_upsert_update_columns(statement) -> dict[str, object]:
 
 
 OFFICIAL_RSS_SOURCE_MARKERS = (
+    "asnr",
+    "autorite de surete nucleaire",
+    "canadian nuclear safety commission",
+    "cnsc",
     "international atomic energy agency",
     "iaea",
     "nuclear regulatory commission",
     "nrc",
+    "office for nuclear regulation",
+    "onr",
+)
+COMPANY_RSS_SOURCE_MARKERS = (
+    "nuclearelectrica",
+    "sn nuclearelectrica",
 )
 
 
@@ -592,6 +602,8 @@ def source_tier_for_kind(source_kind: str | SourceKind, source_name: str | None 
         source = (source_name or "").casefold()
         if any(marker in source for marker in OFFICIAL_RSS_SOURCE_MARKERS):
             return "tier_2_official_document"
+        if any(marker in source for marker in COMPANY_RSS_SOURCE_MARKERS):
+            return "tier_3_company_statement"
         return "tier_4_reported_media"
     if kind == "gdelt":
         return "tier_5_discovery_feed"
@@ -627,8 +639,20 @@ def repair_source_tiers() -> dict[str, int]:
                   or lower(source_name) like '%iaea%'
                   or lower(source_name) like '%nuclear regulatory commission%'
                   or lower(source_name) like '%nrc%'
+                  or lower(source_name) like '%canadian nuclear safety commission%'
+                  or lower(source_name) like '%cnsc%'
+                  or lower(source_name) like '%office for nuclear regulation%'
+                  or lower(source_name) like '%onr%'
+                  or lower(source_name) like '%asnr%'
+                  or lower(source_name) like '%autorite de surete nucleaire%'
                 )
                 then 'tier_2_official_document'
+              when source_kind::text = 'rss'
+                and (
+                  lower(source_name) like '%nuclearelectrica%'
+                  or lower(source_name) like '%sn nuclearelectrica%'
+                )
+                then 'tier_3_company_statement'
               when source_kind::text = 'rss'
                 then 'tier_4_reported_media'
               when source_kind::text = 'gdelt'
