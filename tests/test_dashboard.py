@@ -9,6 +9,7 @@ from nuclear_energy.db import EventListItem
 from nuclear_energy.dashboard import (
     _amount_color_kwargs,
     _capacity_chart_frame,
+    _country_options_alphabetical,
     _daily_brief_markdown,
     _daily_tape_readout,
     _daily_window_start,
@@ -239,6 +240,20 @@ def test_capacity_chart_frame_ranks_by_capacity_and_labels_united_states() -> No
 
     assert result.iloc[0]["country_label"] == "United States (USA)"
     assert result["country_label"].tolist() == ["United States (USA)", "China (CHN)", "France (FRA)"]
+
+
+def test_country_options_alphabetical_sorts_energy_selector_by_country_name() -> None:
+    summaries = [
+        SimpleNamespace(country_name="United States", iso_code="USA"),
+        SimpleNamespace(country_name="China", iso_code="CHN"),
+        SimpleNamespace(country_name="Belgium", iso_code="BEL"),
+    ]
+
+    assert _country_options_alphabetical(summaries) == [
+        "Belgium (BEL)",
+        "China (CHN)",
+        "United States (USA)",
+    ]
 
 
 def test_technology_detail_frame_labels_missing_technology() -> None:

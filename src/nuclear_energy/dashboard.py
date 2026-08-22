@@ -551,7 +551,7 @@ def _render_energy_system() -> None:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    country_options = [f"{row.country_name} ({row.iso_code})" for row in summaries]
+    country_options = _country_options_alphabetical(summaries)
     selected_country = st.selectbox("Country", country_options, key="energy_country")
     selected_iso_code = selected_country.rsplit("(", 1)[-1].rstrip(")")
     years = _load_or_stop(fetch_energy_years, selected_iso_code)
@@ -2097,6 +2097,16 @@ def _selected_country_iso_code(selected_country: str) -> str | None:
     if selected_country == ALL_COUNTRIES:
         return None
     return selected_country.rsplit("(", 1)[-1].rstrip(")")
+
+
+def _country_options_alphabetical(summaries) -> list[str]:
+    return [
+        f"{row.country_name} ({row.iso_code})"
+        for row in sorted(
+            summaries,
+            key=lambda row: ((row.country_name or "").casefold(), row.iso_code or ""),
+        )
+    ]
 
 
 def _source_value(source_name: str) -> str | None:
