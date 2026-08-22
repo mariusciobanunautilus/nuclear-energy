@@ -53,6 +53,7 @@ WORKFLOW_MODES = {
     "Official transactions": "official-transactions",
     "Documents and news": "documents",
     "Energy data": "energy",
+    "Live grid snapshot": "live-generation",
 }
 PAGES = {
     "Daily Tape": {
@@ -554,7 +555,7 @@ def _render_energy_system() -> None:
             labels={
                 "country_label": "Country",
                 "nuclear_capacity_gw": "Nuclear capacity (GW)",
-                "estimated_capacity_factor_percent": "Usage (%)",
+                "estimated_capacity_factor_percent": "Estimated capacity factor (%)",
             },
             color_continuous_scale="Picnic",
         )
@@ -587,12 +588,19 @@ def _render_energy_system() -> None:
     live_generation = _load_or_stop(fetch_latest_live_generation_snapshot, selected_iso_code)
 
     latest = _latest_energy_record(years)
+    st.markdown("#### Annual Historical Baseline")
+    st.caption(
+        "Historical annual metrics are not live operational status. Use the live grid snapshot below for current metered MW."
+    )
     country_columns = st.columns(5)
     country_columns[0].metric("Latest Year", _format_year(latest.year))
     country_columns[1].metric("Nuclear Generation", _format_twh(latest.nuclear_generation_twh))
     country_columns[2].metric("Nuclear Share", _format_percent(latest.nuclear_share_electricity_percent))
     country_columns[3].metric("Nuclear Capacity", _format_gw(latest.nuclear_capacity_gw))
-    country_columns[4].metric("Usage", _format_percent(latest.estimated_capacity_factor_percent))
+    country_columns[4].metric(
+        f"{latest.year} Estimated Capacity Factor",
+        _format_percent(latest.estimated_capacity_factor_percent),
+    )
 
     st.markdown("#### Source-Backed Current Operations")
     status_columns = st.columns(4)
@@ -986,8 +994,9 @@ def _render_live_generation_snapshot(snapshot) -> None:
         st.info("No live metered generation snapshot is stored for this country yet.")
         return
 
+    st.info(f"Current nuclear output: {_format_mw(snapshot.nuclear_mw)}")
     columns = st.columns(5)
-    columns[0].metric("Nuclear Now", _format_mw(snapshot.nuclear_mw))
+    columns[0].metric("Current Nuclear Output", _format_mw(snapshot.nuclear_mw))
     columns[1].metric("Demand", _format_mw(snapshot.demand_mw))
     columns[2].metric("Production", _format_mw(snapshot.production_mw))
     columns[3].metric("Balance", _format_mw(snapshot.net_import_export_mw))
@@ -1960,7 +1969,7 @@ def _energy_period_comparison_frame(base_record, compare_record) -> pd.DataFrame
         ("Fossil generation", "fossil_generation_twh", "TWh", "quantity"),
         ("Renewables generation", "renewables_generation_twh", "TWh", "quantity"),
         ("Clean generation", "clean_generation_twh", "TWh", "quantity"),
-        ("Usage", "estimated_capacity_factor_percent", "%", "percentage_point"),
+        ("Estimated capacity factor", "estimated_capacity_factor_percent", "%", "percentage_point"),
     ]
     for label, field, unit, change_kind in metrics:
         base_value = getattr(base_record, field, None)
