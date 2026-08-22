@@ -974,7 +974,11 @@ def sync_events_from_transactions(limit: int | None = None) -> int:
             raw_payload,
             now(),
             now()
-          from event_rows
+          from (
+            select distinct on (external_id) *
+            from event_rows
+            order by external_id, event_date desc nulls last, source_confidence desc nulls last
+          ) as event_rows
           on conflict (external_id) do update
           set
             source_document_id = excluded.source_document_id,
@@ -1033,13 +1037,20 @@ def sync_events_from_transactions(limit: int | None = None) -> int:
         ),
         inserted_entities as (
           insert into public.entities (canonical_name, entity_type, country_iso_code, source_tier, raw_payload)
-          select distinct
+          select distinct on (canonical_name)
             canonical_name,
             entity_type,
             country_iso_code,
             'unclassified',
             jsonb_build_object('source', 'transaction_counterparty')
           from entity_candidates
+          order by
+            canonical_name,
+            case entity_type
+              when 'government_agency' then 1
+              when 'company' then 2
+              else 3
+            end
           on conflict (canonical_name) do update
           set
             entity_type = case
@@ -1089,8 +1100,13 @@ def sync_events_from_transactions(limit: int | None = None) -> int:
         ),
         inserted_projects as (
           insert into public.projects (canonical_name, project_type, country_iso_code, country_name)
-          select canonical_name, 'plant', country_iso_code, country_name
+          select distinct on (canonical_name, country_iso_code)
+            canonical_name,
+            'plant',
+            country_iso_code,
+            country_name
           from project_names
+          order by canonical_name, country_iso_code, country_name nulls last
           on conflict (canonical_name, country_iso_code) do update
           set
             country_name = excluded.country_name,
