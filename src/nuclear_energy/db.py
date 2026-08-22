@@ -534,8 +534,8 @@ live_generation_snapshots = Table(
     Column("source_name", Text, nullable=False),
     Column("source_url", Text, nullable=False),
     Column("raw_payload", JSON, nullable=False),
-    Column("created_at", DateTime(timezone=True), nullable=False),
-    Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sql_text("now()")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=sql_text("now()")),
     UniqueConstraint(
         "country_iso_code",
         "observed_at",
@@ -898,6 +898,7 @@ def upsert_live_generation_snapshots(snapshots: Iterable[LiveGenerationSnapshot]
                 "source_name": snapshot.source_name,
                 "source_url": snapshot.source_url,
                 "raw_payload": snapshot.raw_payload,
+                "created_at": now,
                 "updated_at": now,
             }
         )
@@ -909,7 +910,7 @@ def upsert_live_generation_snapshots(snapshots: Iterable[LiveGenerationSnapshot]
     update_columns = {
         column: getattr(statement.excluded, column)
         for column in rows[0]
-        if column not in {"country_iso_code", "observed_at", "source_name"}
+        if column not in {"country_iso_code", "observed_at", "source_name", "created_at"}
     }
 
     engine = get_engine()
