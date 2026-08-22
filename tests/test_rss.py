@@ -29,3 +29,21 @@ def test_fetch_rss_feed_normalizes_entries(monkeypatch):
     assert documents[0].title == "New reactor policy update"
     assert documents[0].authors == ["Reporter"]
     assert documents[0].tags == ["policy"]
+
+
+def test_fetch_rss_feed_uses_known_title_when_feed_title_is_missing(monkeypatch):
+    class Feed:
+        feed = {}
+        entries = [
+            {
+                "id": "status-1",
+                "title": "Power reactor status update",
+                "link": "https://www.nrc.gov/status",
+            },
+        ]
+
+    monkeypatch.setattr(rss.feedparser, "parse", lambda _url: Feed())
+
+    documents = rss.fetch_rss_feed("https://www.nrc.gov/public-involve/rss?feed=plant-status", limit=1)
+
+    assert documents[0].source_name == "NRC Power Reactor Status"

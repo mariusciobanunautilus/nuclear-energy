@@ -541,7 +541,7 @@ def upsert_documents(documents: Iterable[RawDocument]) -> int:
                 "authors": document.authors,
                 "tags": document.tags,
                 "raw_payload": payload,
-                "source_tier": source_tier_for_kind(document.source_kind.value),
+                "source_tier": source_tier_for_kind(document.source_kind.value, document.source_name),
                 "ingested_at": now,
                 "last_seen_at": now,
                 "updated_at": now,
@@ -574,13 +574,24 @@ def _document_upsert_update_columns(statement) -> dict[str, object]:
     }
 
 
-def source_tier_for_kind(source_kind: str | SourceKind) -> str:
+OFFICIAL_RSS_SOURCE_MARKERS = (
+    "international atomic energy agency",
+    "iaea",
+    "nuclear regulatory commission",
+    "nrc",
+)
+
+
+def source_tier_for_kind(source_kind: str | SourceKind, source_name: str | None = None) -> str:
     kind = source_kind.value if isinstance(source_kind, SourceKind) else str(source_kind)
     if kind in {"usaspending", "eu_ted"}:
         return "tier_1_official_structured"
     if kind in {"eur_lex", "federal_register", "congress", "regulations_gov", "iaea_pris", "eia", "entsoe"}:
         return "tier_2_official_document"
     if kind == "rss":
+        source = (source_name or "").casefold()
+        if any(marker in source for marker in OFFICIAL_RSS_SOURCE_MARKERS):
+            return "tier_2_official_document"
         return "tier_4_reported_media"
     if kind == "gdelt":
         return "tier_5_discovery_feed"
@@ -594,115 +605,69 @@ def source_tier_label(source_tier: str | None) -> str:
 def repair_source_tiers() -> dict[str, int]:
     statement = sql_text(
         """
-        with updated_documents as (
-          update public.ingested_documents
+        with document_tiers as (
+          select
+            id,
+            case
+              when source_kind::text in ('usaspending', 'eu_ted')
+                then 'tier_1_official_structured'
+              when source_kind::text in (
+                'eur_lex',
+                'federal_register',
+                'congress',
+                'regulations_gov',
+                'iaea_pris',
+                'eia',
+                'entsoe'
+              )
+                then 'tier_2_official_document'
+              when source_kind::text = 'rss'
+                and (
+                  lower(source_name) like '%international atomic energy agency%'
+                  or lower(source_name) like '%iaea%'
+                  or lower(source_name) like '%nuclear regulatory commission%'
+                  or lower(source_name) like '%nrc%'
+                )
+                then 'tier_2_official_document'
+              when source_kind::text = 'rss'
+                then 'tier_4_reported_media'
+              when source_kind::text = 'gdelt'
+                then 'tier_5_discovery_feed'
+              else 'unclassified'
+            end as source_tier
+          from public.ingested_documents
+        ),
+        updated_documents as (
+          update public.ingested_documents as d
           set
-            source_tier = case
-              when source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
-              when source_kind::text in (
-                'eur_lex',
-                'federal_register',
-                'congress',
-                'regulations_gov',
-                'iaea_pris',
-                'eia',
-                'entsoe'
-              ) then 'tier_2_official_document'
-              when source_kind::text = 'rss' then 'tier_4_reported_media'
-              when source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
-              else 'unclassified'
-            end,
+            source_tier = dt.source_tier,
             updated_at = now()
-          where source_tier is distinct from case
-              when source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
-              when source_kind::text in (
-                'eur_lex',
-                'federal_register',
-                'congress',
-                'regulations_gov',
-                'iaea_pris',
-                'eia',
-                'entsoe'
-              ) then 'tier_2_official_document'
-              when source_kind::text = 'rss' then 'tier_4_reported_media'
-              when source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
-              else 'unclassified'
-            end
-          returning id
+          from document_tiers as dt
+          where d.id = dt.id
+            and d.source_tier is distinct from dt.source_tier
+          returning d.id
         ),
         updated_events as (
           update public.nuclear_events as e
           set
-            source_tier = case
-              when d.source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
-              when d.source_kind::text in (
-                'eur_lex',
-                'federal_register',
-                'congress',
-                'regulations_gov',
-                'iaea_pris',
-                'eia',
-                'entsoe'
-              ) then 'tier_2_official_document'
-              when d.source_kind::text = 'rss' then 'tier_4_reported_media'
-              when d.source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
-              else 'unclassified'
-            end,
+            source_tier = dt.source_tier,
             updated_at = now()
           from public.ingested_documents as d
+          join document_tiers as dt
+            on dt.id = d.id
           where e.source_document_id = d.id
-            and e.source_tier is distinct from case
-              when d.source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
-              when d.source_kind::text in (
-                'eur_lex',
-                'federal_register',
-                'congress',
-                'regulations_gov',
-                'iaea_pris',
-                'eia',
-                'entsoe'
-              ) then 'tier_2_official_document'
-              when d.source_kind::text = 'rss' then 'tier_4_reported_media'
-              when d.source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
-              else 'unclassified'
-            end
+            and e.source_tier is distinct from dt.source_tier
           returning e.id
         ),
         updated_evidence as (
           update public.event_evidence as ev
           set
-            source_tier = case
-              when d.source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
-              when d.source_kind::text in (
-                'eur_lex',
-                'federal_register',
-                'congress',
-                'regulations_gov',
-                'iaea_pris',
-                'eia',
-                'entsoe'
-              ) then 'tier_2_official_document'
-              when d.source_kind::text = 'rss' then 'tier_4_reported_media'
-              when d.source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
-              else 'unclassified'
-            end
+            source_tier = dt.source_tier
           from public.ingested_documents as d
+          join document_tiers as dt
+            on dt.id = d.id
           where ev.document_id = d.id
-            and ev.source_tier is distinct from case
-              when d.source_kind::text in ('usaspending', 'eu_ted') then 'tier_1_official_structured'
-              when d.source_kind::text in (
-                'eur_lex',
-                'federal_register',
-                'congress',
-                'regulations_gov',
-                'iaea_pris',
-                'eia',
-                'entsoe'
-              ) then 'tier_2_official_document'
-              when d.source_kind::text = 'rss' then 'tier_4_reported_media'
-              when d.source_kind::text = 'gdelt' then 'tier_5_discovery_feed'
-              else 'unclassified'
-            end
+            and ev.source_tier is distinct from dt.source_tier
           returning ev.id
         )
         select
@@ -768,7 +733,7 @@ def record_ingestion_run(
             {
                 "source_kind": kind,
                 "source_name": source_name,
-                "source_tier": source_tier_for_kind(kind),
+                "source_tier": source_tier_for_kind(kind, source_name),
                 "started_at": now,
                 "finished_at": now,
                 "status": status,

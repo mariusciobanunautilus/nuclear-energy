@@ -72,6 +72,49 @@ def test_detect_nuclear_events_marks_discovery_feed_items_for_review():
     assert "needs_review" in event.materiality_flags
 
 
+def test_detect_nuclear_events_captures_supply_contract_current_items():
+    events = detect_nuclear_events(
+        [
+            _document(
+                title="Doosan Enerbility contracted for Natrium components",
+                source_name="World Nuclear News",
+                source_kind="rss",
+                summary=(
+                    "Doosan Enerbility of South Korea has signed a contract for the supply of key equipment "
+                    "for TerraPower's first Natrium sodium-cooled fast reactor power plant in Wyoming, USA."
+                ),
+            )
+        ]
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "supply_contract"
+    assert event.country_iso_code == "USA"
+    assert "procurement" in event.themes
+    assert "project_stage" in event.themes
+
+
+def test_detect_nuclear_events_captures_commissioning_milestones():
+    events = detect_nuclear_events(
+        [
+            _document(
+                title="First fuel loaded into Tianwan unit 7",
+                summary=(
+                    "The loading of fuel assemblies has begun at Tianwan unit 7 "
+                    "in China's Jiangsu province."
+                ),
+            )
+        ]
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "commissioning_milestone"
+    assert event.country_iso_code == "CHN"
+    assert "operations" in event.themes
+
+
 def test_detect_nuclear_events_skips_unlocated_policy_language():
     events = detect_nuclear_events(
         [

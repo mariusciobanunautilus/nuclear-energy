@@ -1,5 +1,5 @@
 from nuclear_energy import config
-from nuclear_energy.config import DEFAULT_WATCHLIST_ENTITIES, _split_csv_env
+from nuclear_energy.config import DEFAULT_RSS_FEEDS, DEFAULT_WATCHLIST_ENTITIES, _split_csv_env
 
 
 def test_split_csv_env_trims_empty_values():
@@ -22,6 +22,20 @@ def test_settings_loads_env_files_from_current_directory(tmp_path, monkeypatch):
     config.get_settings.cache_clear()
     try:
         assert config.get_settings().rss_feeds == ["https://a.example/rss", "https://b.example/rss"]
+    finally:
+        config.get_settings.cache_clear()
+
+
+def test_settings_uses_default_rss_feeds(monkeypatch):
+    monkeypatch.delenv("RSS_FEEDS", raising=False)
+
+    config.get_settings.cache_clear()
+    try:
+        settings = config.get_settings()
+        assert settings.rss_feeds == DEFAULT_RSS_FEEDS
+        assert "https://www.iaea.org/feeds/topnews" in settings.rss_feeds
+        assert "https://www.nrc.gov/public-involve/rss?feed=news" in settings.rss_feeds
+        assert "https://www.nrc.gov/public-involve/rss?feed=plant-status" in settings.rss_feeds
     finally:
         config.get_settings.cache_clear()
 

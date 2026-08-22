@@ -31,7 +31,9 @@ python -m pip install -e ".[dev]"
 
 3. Copy `.env.example` to `.env.local` and fill in missing values.
 4. Start or connect to the Supabase database.
-5. Run an RSS ingestion pass.
+5. Run an RSS ingestion pass. By default, this pulls a curated public feed set covering
+   World Nuclear News, ANS Nuclear Newswire, IAEA top news, NRC news releases, and NRC plant status.
+   Override `RSS_FEEDS` when you want a narrower or custom list.
 
 ```bash
 nuclear-energy ingest-rss --limit 20
@@ -102,13 +104,14 @@ nuclear-energy repair-source-tiers
 
 The dashboard Review Queue turns normalized events into a trader-maintained source of truth. It ranks items by review urgency, shows source evidence, records confirmations, promotes important events into the Daily Tape, marks noise, links duplicates, and stores correction history instead of silently overwriting facts.
 
-Trader watchlists have built-in defaults and can be overridden with comma-separated environment values.
+Trader watchlists and public RSS feeds have built-in defaults and can be overridden with comma-separated environment values.
 
 ```toml
 WATCHLIST_ENTITIES = "Westinghouse Electric Company,Cameco,Centrus Energy,Orano,Framatome,Urenco,Kazatomprom,Rosatom"
 WATCHLIST_PROJECTS = "Cernavoda,Dukovany,Sizewell C,Hinkley Point C,Vogtle,Bruce"
 WATCHLIST_COUNTRIES = "USA,CAN,FRA,GBR,ROU,CZE,POL,BGR,UKR,RUS,CHN,JPN,KOR,KAZ"
 WATCHLIST_THEMES = "fuel_cycle,policy,regulation,project_stage,construction,operations,project_risk,supply_risk"
+RSS_FEEDS = "https://world-nuclear-news.org/rss,https://www.ans.org/news/feed/,https://www.iaea.org/feeds/topnews,https://www.nrc.gov/public-involve/rss?feed=news,https://www.nrc.gov/public-involve/rss?feed=plant-status"
 ```
 
 7. Embed stored chunks and try semantic search.

@@ -22,7 +22,6 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      RSS_FEEDS: https://world-nuclear-news.org/rss
       INGEST_MODE: ${{ github.event.inputs.mode || 'all' }}
 
     steps:
@@ -58,17 +57,17 @@ jobs:
           esac
 
           if [ "$INGEST_MODE" = "all" ] || [ "$INGEST_MODE" = "documents" ]; then
-            nuclear-energy ingest-rss --limit 20
-            nuclear-energy ingest-federal-register --limit 20
-            nuclear-energy ingest-eur-lex --limit 20
-            nuclear-energy ingest-gdelt --limit 20 || echo "GDELT ingest skipped or rate-limited."
-            nuclear-energy extract-documents --limit 30
-            nuclear-energy detect-transactions --limit 500
-            nuclear-energy detect-events --limit 500
+            nuclear-energy ingest-rss --limit 50
+            nuclear-energy ingest-federal-register --limit 50
+            nuclear-energy ingest-eur-lex --limit 50
+            nuclear-energy ingest-gdelt --limit 75 --timespan 3days || echo "GDELT ingest skipped or rate-limited."
+            nuclear-energy extract-documents --limit 120
+            nuclear-energy detect-transactions --limit 1000
+            nuclear-energy detect-events --limit 1000
             nuclear-energy sync-events
             nuclear-energy sync-relationships
             if [ -n "$OPENAI_API_KEY" ]; then
-              nuclear-energy embed-chunks --limit 250
+              nuclear-energy embed-chunks --limit 500
             else
               echo "OPENAI_API_KEY secret is not configured; skipping embeddings."
             fi

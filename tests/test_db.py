@@ -57,6 +57,8 @@ def test_source_tier_for_kind_ranks_source_trust():
     assert source_tier_for_kind("eu_ted") == "tier_1_official_structured"
     assert source_tier_for_kind(SourceKind.federal_register) == "tier_2_official_document"
     assert source_tier_for_kind(SourceKind.rss) == "tier_4_reported_media"
+    assert source_tier_for_kind(SourceKind.rss, "IAEA Top News") == "tier_2_official_document"
+    assert source_tier_for_kind(SourceKind.rss, "NRC News Releases") == "tier_2_official_document"
     assert source_tier_for_kind(SourceKind.gdelt) == "tier_5_discovery_feed"
     assert source_tier_label("tier_1_official_structured") == "Tier 1 - Official Structured"
     assert source_tier_label("unknown") == "Unclassified"

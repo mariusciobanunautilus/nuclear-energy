@@ -10,6 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_RSS_FEEDS = [
+    "https://world-nuclear-news.org/rss",
+    "https://www.ans.org/news/feed/",
+    "https://www.iaea.org/feeds/topnews",
+    "https://www.nrc.gov/public-involve/rss?feed=news",
+    "https://www.nrc.gov/public-involve/rss?feed=plant-status",
+]
 DEFAULT_WATCHLIST_ENTITIES = [
     "Westinghouse Electric Company",
     "Cameco",
@@ -76,7 +83,7 @@ class Settings(BaseModel):
     database_url: Optional[str] = Field(default=None, alias="DATABASE_URL")
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
     supabase_url: Optional[str] = Field(default=None, alias="SUPABASE_URL")
-    rss_feeds: list[str] = Field(default_factory=list, alias="RSS_FEEDS")
+    rss_feeds: list[str] = Field(default_factory=lambda: DEFAULT_RSS_FEEDS.copy(), alias="RSS_FEEDS")
     watchlist_entities: list[str] = Field(default_factory=lambda: DEFAULT_WATCHLIST_ENTITIES.copy(), alias="WATCHLIST_ENTITIES")
     watchlist_projects: list[str] = Field(default_factory=lambda: DEFAULT_WATCHLIST_PROJECTS.copy(), alias="WATCHLIST_PROJECTS")
     watchlist_countries: list[str] = Field(default_factory=lambda: DEFAULT_WATCHLIST_COUNTRIES.copy(), alias="WATCHLIST_COUNTRIES")
@@ -110,7 +117,7 @@ def _split_csv_env(value: Optional[str]) -> list[str]:
 def get_settings() -> Settings:
     _load_env_files()
     values = dict(os.environ)
-    values["RSS_FEEDS"] = _split_csv_env(os.environ.get("RSS_FEEDS"))
+    values["RSS_FEEDS"] = _split_csv_env(os.environ.get("RSS_FEEDS")) or DEFAULT_RSS_FEEDS
     values["WATCHLIST_ENTITIES"] = _split_csv_env(os.environ.get("WATCHLIST_ENTITIES")) or DEFAULT_WATCHLIST_ENTITIES
     values["WATCHLIST_PROJECTS"] = _split_csv_env(os.environ.get("WATCHLIST_PROJECTS")) or DEFAULT_WATCHLIST_PROJECTS
     values["WATCHLIST_COUNTRIES"] = _split_csv_env(os.environ.get("WATCHLIST_COUNTRIES")) or DEFAULT_WATCHLIST_COUNTRIES

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -104,6 +105,42 @@ EVENT_TERM_GROUPS = (
         "confirmed",
     ),
     EventTermGroup(
+        "supply_contract",
+        (
+            "signed a contract",
+            "signs a contract",
+            "contracted for",
+            "contracted to supply",
+            "supply contract",
+            "supply of key equipment",
+            "key equipment",
+            "component supply",
+            "service agreement",
+            "memorandum of understanding",
+        ),
+        ("procurement", "project_stage"),
+        "reported",
+    ),
+    EventTermGroup(
+        "commissioning_milestone",
+        (
+            "installed",
+            "module installed",
+            "installation completed",
+            "hot tests completed",
+            "cold tests completed",
+            "first criticality",
+            "grid connection",
+            "connected to the grid",
+            "fuel loaded",
+            "loading of fuel",
+            "fuel loading",
+            "began loading fuel",
+        ),
+        ("construction", "operations", "project_stage"),
+        "reported",
+    ),
+    EventTermGroup(
         "construction_refurbishment",
         (
             "life extension",
@@ -143,6 +180,8 @@ EVENT_TERM_GROUPS = (
             "automatic trip",
             "reactor trip",
             "maintenance outage",
+            "taken offline",
+            "taken off line",
         ),
         ("operations", "supply_risk"),
         "reported",
@@ -234,9 +273,9 @@ def _detect_document_event(document: EventDocument) -> NuclearEvent | None:
     group = _best_event_group(matched_by_type)
     matched_terms = matched_by_type[group.event_type]
     amount_text, amount, currency = _extract_money(text)
-    country = countries[0] if countries else None
     plant = plants[0] if plants else None
-    source_tier = source_tier_for_kind(document.source_kind)
+    country = _primary_event_country(normalised_text, countries, plant)
+    source_tier = source_tier_for_kind(document.source_kind, document.source_name)
     event_status = _event_status(group.default_status, source_tier)
     materiality_flags = _materiality_flags(
         event_type=group.event_type,
@@ -306,10 +345,12 @@ def _event_type_priority(event_type: str) -> int:
     priorities = {
         "license_approval": 12,
         "construction_start": 11,
+        "commissioning_milestone": 10,
         "sanction_or_export_control": 10,
         "delay_or_cost_overrun": 9,
         "license_application": 8,
         "restart": 7,
+        "supply_contract": 6,
         "outage": 6,
         "policy_change": 5,
         "construction_refurbishment": 4,
@@ -324,6 +365,26 @@ def _event_status(default_status: str, source_tier: str) -> str:
     if source_tier == "tier_5_discovery_feed":
         return "detected"
     return default_status
+
+
+def _primary_event_country(normalised_text: str, countries, plant):
+    if plant:
+        plant_country = _country_for_iso_code(plant.iso_code)
+        if plant_country:
+            return plant_country
+    if not countries:
+        return None
+    return max(countries, key=lambda country: _country_mention_position(normalised_text, country))
+
+
+def _country_mention_position(normalised_text: str, country) -> int:
+    positions = []
+    for alias in country.aliases:
+        term = _normalise_text(alias).strip()
+        matches = list(re.finditer(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", normalised_text))
+        if matches:
+            positions.append(matches[-1].start())
+    return max(positions) if positions else -1
 
 
 def _materiality_flags(

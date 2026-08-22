@@ -9,6 +9,12 @@ import feedparser
 from nuclear_energy.models import RawDocument, SourceKind
 
 
+KNOWN_FEED_TITLES = {
+    "https://www.nrc.gov/public-involve/rss?feed=news": "NRC News Releases",
+    "https://www.nrc.gov/public-involve/rss?feed=plant-status": "NRC Power Reactor Status",
+}
+
+
 def _get_value(item: object, key: str):
     if isinstance(item, dict):
         return item.get(key)
@@ -49,7 +55,7 @@ def _entry_tags(entry: object) -> list[str]:
 
 def fetch_rss_feed(feed_url: str, *, limit: int | None = None) -> list[RawDocument]:
     parsed = feedparser.parse(feed_url)
-    source_name = parsed.feed.get("title") or feed_url
+    source_name = parsed.feed.get("title") or KNOWN_FEED_TITLES.get(feed_url) or feed_url
     documents: list[RawDocument] = []
 
     entries: Iterable[object] = parsed.entries[:limit] if limit else parsed.entries
