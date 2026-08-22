@@ -105,7 +105,7 @@ EVENT_TERM_GROUPS = (
         "confirmed",
     ),
     EventTermGroup(
-        "supply_contract",
+        "contract_award",
         (
             "signed a contract",
             "signs a contract",
@@ -350,7 +350,7 @@ def _event_type_priority(event_type: str) -> int:
         "delay_or_cost_overrun": 9,
         "license_application": 8,
         "restart": 7,
-        "supply_contract": 6,
+        "contract_award": 6,
         "outage": 6,
         "policy_change": 5,
         "construction_refurbishment": 4,

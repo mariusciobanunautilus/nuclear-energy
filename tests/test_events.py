@@ -89,7 +89,7 @@ def test_detect_nuclear_events_captures_supply_contract_current_items():
 
     assert len(events) == 1
     event = events[0]
-    assert event.event_type == "supply_contract"
+    assert event.event_type == "contract_award"
     assert event.country_iso_code == "USA"
     assert "procurement" in event.themes
     assert "project_stage" in event.themes
