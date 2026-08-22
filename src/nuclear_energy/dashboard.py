@@ -23,6 +23,7 @@ from nuclear_energy.db import (
     fetch_event_metrics,
     fetch_events_for_entity,
     fetch_events_for_project,
+    fetch_latest_live_generation_snapshot,
     fetch_recent_events,
     fetch_recent_documents,
     fetch_review_history,
@@ -583,6 +584,7 @@ def _render_energy_system() -> None:
     )
     selected_technology_rows = _load_or_stop(fetch_reactor_technology_summaries, selected_iso_code)
     operational_status = _energy_operational_status(current_events, selected_technology_rows)
+    live_generation = _load_or_stop(fetch_latest_live_generation_snapshot, selected_iso_code)
 
     latest = _latest_energy_record(years)
     country_columns = st.columns(5)
@@ -599,6 +601,9 @@ def _render_energy_system() -> None:
     status_columns[2].metric("Offline / At Risk", _format_gw(operational_status.offline_capacity_gw))
     status_columns[3].metric("Latest Signal", _format_datetime(operational_status.latest_event_date) or "n/a")
     st.caption(operational_status.summary)
+
+    st.markdown("#### Live Grid Snapshot")
+    _render_live_generation_snapshot(live_generation)
 
     st.markdown(f"#### {latest.country_name} Current Nuclear Status")
     st.caption(
@@ -974,6 +979,56 @@ def _render_energy_current_events(events) -> None:
             "url": st.column_config.LinkColumn("source link"),
         },
     )
+
+
+def _render_live_generation_snapshot(snapshot) -> None:
+    if snapshot is None:
+        st.info("No live metered generation snapshot is stored for this country yet.")
+        return
+
+    columns = st.columns(5)
+    columns[0].metric("Nuclear Now", _format_mw(snapshot.nuclear_mw))
+    columns[1].metric("Demand", _format_mw(snapshot.demand_mw))
+    columns[2].metric("Production", _format_mw(snapshot.production_mw))
+    columns[3].metric("Balance", _format_mw(snapshot.net_import_export_mw))
+    columns[4].metric("Freshness", _live_snapshot_freshness_label(snapshot.observed_at))
+    st.caption(
+        f"Observed {_format_datetime(snapshot.observed_at)} from "
+        f"[{snapshot.source_name}]({snapshot.source_url}). "
+        "This is near-real-time metered MW and is separate from annual TWh/capacity history."
+    )
+
+    mix_frame = _live_generation_mix_frame(snapshot)
+    if not mix_frame.empty:
+        fig = px.bar(
+            mix_frame,
+            x="source",
+            y="mw",
+            color="source",
+            labels={"source": "Source", "mw": "MW"},
+            color_discrete_sequence=px.colors.qualitative.Set2,
+        )
+        fig.update_layout(height=260, margin=dict(l=10, r=10, t=16, b=10), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def _live_generation_mix_frame(snapshot) -> pd.DataFrame:
+    rows = [
+        ("Nuclear", snapshot.nuclear_mw),
+        ("Hydro", snapshot.hydro_mw),
+        ("Wind", snapshot.wind_mw),
+        ("Solar", snapshot.solar_mw),
+        ("Gas / hydrocarbons", snapshot.hydrocarbons_mw),
+        ("Coal", snapshot.coal_mw),
+        ("Biomass", snapshot.biomass_mw),
+        ("Storage", snapshot.storage_mw),
+    ]
+    frame = pd.DataFrame(
+        [{"source": label, "mw": value} for label, value in rows if value is not None]
+    )
+    if frame.empty:
+        return frame
+    return frame.sort_values("mw", ascending=False)
 
 
 def _energy_current_events_frame(events) -> pd.DataFrame:
@@ -2010,6 +2065,12 @@ def _format_gw(value) -> str:
     return _format_quantity(value, "GW")
 
 
+def _format_mw(value) -> str:
+    if value is None or pd.isna(value):
+        return "n/a"
+    return f"{int(round(float(value))):,} MW"
+
+
 def _format_mwe(value) -> str:
     return _format_quantity(value, "MWe")
 
@@ -2280,6 +2341,20 @@ def _format_percent_number(value) -> str:
     if value is None or pd.isna(value):
         return "0.0%"
     return f"{float(value):.1f}%"
+
+
+def _live_snapshot_freshness_label(observed_at: datetime | None, *, now: datetime | None = None) -> str:
+    if observed_at is None:
+        return "Missing"
+    current = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    age_minutes = max((current - observed_at.astimezone(timezone.utc)).total_seconds() / 60, 0)
+    if age_minutes <= 30:
+        return "Fresh"
+    if age_minutes <= 120:
+        return "Stale"
+    return "Old"
 
 
 def _has_positive_amount_counts(frame: pd.DataFrame) -> bool:

@@ -18,11 +18,14 @@ from nuclear_energy.dashboard import (
     _event_type_label,
     _event_correction_payload,
     _format_patch_payload,
+    _format_mw,
     _format_datetime,
     _format_trade_balance,
     _has_positive_amount_counts,
     _join_labels,
     _join_review_reasons,
+    _live_generation_mix_frame,
+    _live_snapshot_freshness_label,
     _energy_comparison_readout,
     _energy_operational_status,
     _energy_period_comparison_frame,
@@ -59,6 +62,34 @@ def test_format_trade_balance_labels_net_imports_and_exports() -> None:
     assert _format_trade_balance(2.5) == "2.5 TWh net imports"
     assert _format_trade_balance(-3.25) == "3.2 TWh net exports"
     assert _format_trade_balance(0) == "balanced"
+
+
+def test_live_generation_formatting_labels_current_mw_and_freshness() -> None:
+    now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
+
+    assert _format_mw(0) == "0 MW"
+    assert _format_mw(1250) == "1,250 MW"
+    assert _live_snapshot_freshness_label(datetime(2026, 8, 23, 11, 45, tzinfo=timezone.utc), now=now) == "Fresh"
+    assert _live_snapshot_freshness_label(datetime(2026, 8, 23, 11, 0, tzinfo=timezone.utc), now=now) == "Stale"
+    assert _live_snapshot_freshness_label(datetime(2026, 8, 23, 9, 0, tzinfo=timezone.utc), now=now) == "Old"
+
+
+def test_live_generation_mix_frame_keeps_zero_nuclear_output() -> None:
+    snapshot = SimpleNamespace(
+        nuclear_mw=0,
+        hydro_mw=1250,
+        wind_mw=374,
+        solar_mw=-12,
+        hydrocarbons_mw=1331,
+        coal_mw=657,
+        biomass_mw=57,
+        storage_mw=35,
+    )
+
+    frame = _live_generation_mix_frame(snapshot)
+
+    assert {"source": "Nuclear", "mw": 0} in frame.to_dict(orient="records")
+    assert frame.iloc[0]["source"] == "Gas / hydrocarbons"
 
 
 def test_latest_energy_record_prefers_latest_nuclear_populated_year() -> None:

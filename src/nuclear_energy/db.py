@@ -198,6 +198,26 @@ class ReactorTechnologySummary:
 
 
 @dataclass(frozen=True)
+class LiveGenerationSnapshotItem:
+    observed_at: datetime
+    country_iso_code: str
+    country_name: str
+    demand_mw: int | None
+    production_mw: int | None
+    net_import_export_mw: int | None
+    nuclear_mw: int | None
+    wind_mw: int | None
+    hydro_mw: int | None
+    hydrocarbons_mw: int | None
+    coal_mw: int | None
+    solar_mw: int | None
+    biomass_mw: int | None
+    storage_mw: int | None
+    source_name: str
+    source_url: str
+
+
+@dataclass(frozen=True)
 class TransactionDetectionDocument:
     id: str
     title: str
@@ -2755,6 +2775,65 @@ def fetch_reactor_technology_summaries(iso_code: str | None = None) -> list[Reac
         )
         for row in rows
     ]
+
+
+def fetch_latest_live_generation_snapshot(iso_code: str) -> LiveGenerationSnapshotItem | None:
+    iso_code = iso_code.strip().upper()
+    if not iso_code:
+        return None
+
+    statement = sql_text(
+        """
+        select
+          observed_at,
+          country_iso_code,
+          country_name,
+          demand_mw,
+          production_mw,
+          net_import_export_mw,
+          nuclear_mw,
+          wind_mw,
+          hydro_mw,
+          hydrocarbons_mw,
+          coal_mw,
+          solar_mw,
+          biomass_mw,
+          storage_mw,
+          source_name,
+          source_url
+        from public.live_generation_snapshots
+        where country_iso_code = :iso_code
+        order by observed_at desc
+        limit 1
+        """
+    )
+
+    with Session(get_engine()) as session:
+        if not session.execute(sql_text("select to_regclass('public.live_generation_snapshots')")).scalar():
+            return None
+        row = session.execute(statement, {"iso_code": iso_code}).mappings().first()
+
+    if not row:
+        return None
+
+    return LiveGenerationSnapshotItem(
+        observed_at=row["observed_at"],
+        country_iso_code=row["country_iso_code"],
+        country_name=row["country_name"],
+        demand_mw=row["demand_mw"],
+        production_mw=row["production_mw"],
+        net_import_export_mw=row["net_import_export_mw"],
+        nuclear_mw=row["nuclear_mw"],
+        wind_mw=row["wind_mw"],
+        hydro_mw=row["hydro_mw"],
+        hydrocarbons_mw=row["hydrocarbons_mw"],
+        coal_mw=row["coal_mw"],
+        solar_mw=row["solar_mw"],
+        biomass_mw=row["biomass_mw"],
+        storage_mw=row["storage_mw"],
+        source_name=row["source_name"],
+        source_url=row["source_url"],
+    )
 
 
 def fetch_transaction_metrics(country_iso_code: Optional[str] = None) -> TransactionMetrics:
