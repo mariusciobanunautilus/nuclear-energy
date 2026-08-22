@@ -52,53 +52,194 @@ WORKFLOW_MODES = {
     "Documents and news": "documents",
     "Energy data": "energy",
 }
+PAGES = {
+    "Daily Tape": {
+        "description": "Morning-ready intelligence grouped by official status, materiality, watchlists, themes, and review need.",
+        "renderer": "_render_daily_tape",
+    },
+    "Review Queue": {
+        "description": "Triage unreviewed events, promote important facts, correct fields, and preserve review history.",
+        "renderer": "_render_review_queue",
+    },
+    "Events": {
+        "description": "Filter the normalized event tape by country, review state, and official-source coverage.",
+        "renderer": "_render_events",
+    },
+    "Signals": {
+        "description": "Track public nuclear-sector procurement, award, funding, and transaction evidence.",
+        "renderer": "_render_transactions",
+    },
+    "Energy System": {
+        "description": "Compare country electricity systems, nuclear generation, capacity, trade, and recent status events.",
+        "renderer": "_render_energy_system",
+    },
+    "Entities": {
+        "description": "Follow companies, agencies, regulators, vendors, and other entities linked to source-backed events.",
+        "renderer": "_render_entities",
+    },
+    "Projects": {
+        "description": "Follow plants, reactors, fuel facilities, mines, and programs linked to event evidence.",
+        "renderer": "_render_projects",
+    },
+    "Documents": {
+        "description": "Inspect recently ingested public documents by source.",
+        "renderer": "_render_documents",
+    },
+    "Keyword Search": {
+        "description": "Search stored public documents when exact terms matter.",
+        "renderer": "_render_keyword_search",
+    },
+    "Source Health": {
+        "description": "Check source freshness, extraction coverage, and search readiness.",
+        "renderer": "_render_source_health",
+    },
+    "Exports": {
+        "description": "Download source document snapshots for spreadsheet or markdown review.",
+        "renderer": "_render_exports",
+    },
+    "Automation": {
+        "description": "Start configured refresh workflows from the dashboard.",
+        "renderer": "_render_automation",
+    },
+}
 
 
 def main() -> None:
     st.set_page_config(page_title="Nuclear Energy Intelligence", layout="wide")
-    st.title("Nuclear Energy Intelligence")
+    _apply_theme()
 
     metrics = _load_or_stop(fetch_dashboard_metrics)
     source_summaries = _load_or_stop(fetch_source_summaries)
     source_names = [summary.source_name for summary in source_summaries]
 
+    selected_page = _render_sidebar(metrics)
+    _render_header(selected_page, PAGES[selected_page]["description"])
     _render_metric_strip(metrics)
 
-    tabs = st.tabs([
-        "Daily Tape",
-        "Source Health",
-        "Energy System",
-        "Events",
-        "Entities",
-        "Projects",
-        "Documents",
-        "Keyword Search",
-        "Exports",
-        "Automation",
-        "Review Queue",
-    ])
-    with tabs[0]:
-        _render_daily_tape()
-    with tabs[1]:
+    renderer = PAGES[selected_page]["renderer"]
+    if renderer == "_render_source_health":
         _render_source_health(source_summaries)
-    with tabs[2]:
-        _render_energy_system()
-    with tabs[3]:
-        _render_events()
-    with tabs[4]:
-        _render_entities()
-    with tabs[5]:
-        _render_projects()
-    with tabs[6]:
+    elif renderer == "_render_documents":
         _render_documents(source_names)
-    with tabs[7]:
+    elif renderer == "_render_keyword_search":
         _render_keyword_search(source_names)
-    with tabs[8]:
+    elif renderer == "_render_exports":
         _render_exports(source_names)
-    with tabs[9]:
-        _render_automation()
-    with tabs[10]:
-        _render_review_queue()
+    else:
+        globals()[renderer]()
+
+
+def _apply_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --surface: #ffffff;
+            --surface-muted: #f5f7f9;
+            --line: #dbe3ea;
+            --ink: #16202a;
+            --muted: #647383;
+            --accent: #27736b;
+            --accent-soft: #e6f3ef;
+            --warning-soft: #fff5dc;
+        }
+        .block-container {
+            padding-top: 1.35rem;
+            padding-bottom: 3rem;
+            max-width: 1500px;
+        }
+        h1, h2, h3 {
+            letter-spacing: 0;
+        }
+        div[data-testid="stMetric"] {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 0.75rem 0.85rem;
+            min-height: 92px;
+        }
+        div[data-testid="stMetric"] label {
+            color: var(--muted);
+        }
+        div[data-testid="stMetricValue"] {
+            color: var(--ink);
+            font-size: 1.5rem;
+        }
+        section[data-testid="stSidebar"] {
+            background: #f7f9fb;
+            border-right: 1px solid var(--line);
+        }
+        section[data-testid="stSidebar"] div[role="radiogroup"] label {
+            border-radius: 8px;
+            padding: 0.18rem 0.35rem;
+        }
+        .ux-hero {
+            border-bottom: 1px solid var(--line);
+            padding: 0.2rem 0 1rem 0;
+            margin-bottom: 1rem;
+        }
+        .ux-kicker {
+            color: var(--accent);
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 0.2rem;
+        }
+        .ux-title {
+            color: var(--ink);
+            font-size: clamp(1.7rem, 2.6vw, 2.5rem);
+            font-weight: 760;
+            line-height: 1.08;
+            margin: 0;
+        }
+        .ux-description {
+            color: var(--muted);
+            max-width: 840px;
+            margin-top: 0.4rem;
+            font-size: 1rem;
+        }
+        div[data-testid="stDataFrame"] {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        div[data-testid="stAlert"] {
+            border-radius: 8px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_sidebar(metrics) -> str:
+    with st.sidebar:
+        st.markdown("### Nuclear Energy")
+        st.caption("Source-backed intelligence workspace")
+        selected_page = st.radio("View", list(PAGES), label_visibility="collapsed")
+        st.divider()
+        embedded_pct = _ratio_percent(metrics.embedded_chunk_count, metrics.chunk_count)
+        st.metric("AI-ready", _format_percent_number(embedded_pct))
+        st.progress(
+            metrics.embedded_chunk_count / metrics.chunk_count if metrics.chunk_count else 0,
+            text=f"{metrics.embedded_chunk_count:,} of {metrics.chunk_count:,} chunks",
+        )
+        st.caption(f"Latest item: {_format_datetime(metrics.latest_published_at) or 'n/a'}")
+        return selected_page
+
+
+def _render_header(title: str, description: str) -> None:
+    st.markdown(
+        f"""
+        <div class="ux-hero">
+            <div class="ux-kicker">Nuclear Intelligence</div>
+            <h1 class="ux-title">{title}</h1>
+            <div class="ux-description">{description}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _render_metric_strip(metrics) -> None:
@@ -907,12 +1048,26 @@ def _render_event_table(events, *, rows: int) -> None:
         hide_index=True,
         height=420,
         column_config={
+            "date": st.column_config.TextColumn("date", width="small"),
+            "trust_tier": st.column_config.TextColumn("trust tier", width="small"),
+            "type": st.column_config.TextColumn("type", width="medium"),
+            "status": st.column_config.TextColumn("status", width="small"),
+            "review": st.column_config.TextColumn("review", width="small"),
+            "country": st.column_config.TextColumn("country", width="medium"),
+            "project": st.column_config.TextColumn("project", width="medium"),
+            "amount": st.column_config.TextColumn("amount", width="small"),
+            "why_it_matters": st.column_config.TextColumn("why it matters", width="medium"),
+            "themes": st.column_config.TextColumn("themes", width="medium"),
             "confidence": st.column_config.ProgressColumn(
                 "confidence",
                 min_value=0.0,
                 max_value=1.0,
                 format="%.2f",
             ),
+            "evidence": st.column_config.NumberColumn("evidence", width="small"),
+            "event": st.column_config.TextColumn("event", width="large"),
+            "source_summary": st.column_config.TextColumn("source summary", width="large"),
+            "source": st.column_config.TextColumn("source", width="medium"),
             "url": st.column_config.LinkColumn("source link"),
         },
     )
@@ -1083,7 +1238,30 @@ def _render_review_queue_table(queue) -> None:
         use_container_width=True,
         hide_index=True,
         height=360,
-        column_config={"url": st.column_config.LinkColumn("source link")},
+        column_config={
+            "priority": st.column_config.NumberColumn("priority", width="small"),
+            "date": st.column_config.TextColumn("date", width="small"),
+            "trust_tier": st.column_config.TextColumn("trust tier", width="small"),
+            "type": st.column_config.TextColumn("type", width="medium"),
+            "status": st.column_config.TextColumn("status", width="small"),
+            "review": st.column_config.TextColumn("review", width="small"),
+            "country": st.column_config.TextColumn("country", width="medium"),
+            "project": st.column_config.TextColumn("project", width="medium"),
+            "why_it_matters": st.column_config.TextColumn("why it matters", width="medium"),
+            "themes": st.column_config.TextColumn("themes", width="medium"),
+            "review_reason": st.column_config.TextColumn("review reason", width="medium"),
+            "confidence": st.column_config.ProgressColumn(
+                "confidence",
+                min_value=0.0,
+                max_value=1.0,
+                format="%.2f",
+            ),
+            "evidence": st.column_config.NumberColumn("evidence", width="small"),
+            "event": st.column_config.TextColumn("event", width="large"),
+            "source_summary": st.column_config.TextColumn("source summary", width="large"),
+            "source": st.column_config.TextColumn("source", width="medium"),
+            "url": st.column_config.LinkColumn("source link"),
+        },
     )
 
 
@@ -1109,7 +1287,14 @@ def _render_event_evidence(evidence) -> None:
         use_container_width=True,
         hide_index=True,
         height=260,
-        column_config={"url": st.column_config.LinkColumn("source link")},
+        column_config={
+            "published": st.column_config.TextColumn("published", width="small"),
+            "trust_tier": st.column_config.TextColumn("trust tier", width="small"),
+            "kind": st.column_config.TextColumn("kind", width="small"),
+            "source": st.column_config.TextColumn("source", width="medium"),
+            "snippet": st.column_config.TextColumn("snippet", width="large"),
+            "url": st.column_config.LinkColumn("source link"),
+        },
     )
 
 
