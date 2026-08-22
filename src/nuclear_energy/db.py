@@ -1405,13 +1405,18 @@ def sync_event_relationships(limit: int | None = None) -> int:
         ),
         upserted_entities as (
           insert into public.entities (canonical_name, entity_type, country_iso_code, source_tier, raw_payload)
-          select distinct
+          select distinct on (canonical_name)
             canonical_name,
             entity_type,
             country_iso_code,
             source_tier,
             jsonb_build_object('source', 'relationship_sync')
           from entity_candidates
+          order by
+            canonical_name,
+            case when entity_type = 'unknown' then 1 else 0 end,
+            country_iso_code nulls last,
+            source_tier
           on conflict (canonical_name) do update
           set
             entity_type = case
@@ -1467,8 +1472,13 @@ def sync_event_relationships(limit: int | None = None) -> int:
         ),
         upserted_projects as (
           insert into public.projects (canonical_name, project_type, country_iso_code, country_name)
-          select canonical_name, project_type, country_iso_code, country_name
+          select distinct on (canonical_name, country_iso_code)
+            canonical_name,
+            project_type,
+            country_iso_code,
+            country_name
           from project_candidates
+          order by canonical_name, country_iso_code, country_name nulls last
           on conflict (canonical_name, country_iso_code) do update
           set
             project_type = case
