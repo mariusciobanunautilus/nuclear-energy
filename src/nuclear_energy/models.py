@@ -58,6 +58,26 @@ class CountryEnergyYear(BaseModel):
     raw_payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class LiveGenerationSnapshot(BaseModel):
+    observed_at: datetime
+    country_iso_code: str = Field(min_length=3, max_length=3)
+    country_name: str = Field(min_length=1)
+    demand_mw: Optional[int] = None
+    production_mw: Optional[int] = None
+    net_import_export_mw: Optional[int] = None
+    nuclear_mw: Optional[int] = None
+    wind_mw: Optional[int] = None
+    hydro_mw: Optional[int] = None
+    hydrocarbons_mw: Optional[int] = None
+    coal_mw: Optional[int] = None
+    solar_mw: Optional[int] = None
+    biomass_mw: Optional[int] = None
+    storage_mw: Optional[int] = None
+    source_name: str = "Transelectrica Live SEN"
+    source_url: str = "https://www.sistemulenergetic.ro/"
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class NuclearTransaction(BaseModel):
     external_id: str = Field(min_length=1)
     document_id: str = Field(min_length=1)
