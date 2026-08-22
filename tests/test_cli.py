@@ -1,6 +1,13 @@
 import httpx
+from types import SimpleNamespace
 
-from nuclear_energy.cli import _describe_openai_error, _describe_source_http_error, _ingest_energy, build_parser
+from nuclear_energy.cli import (
+    _describe_openai_error,
+    _describe_source_http_error,
+    _ingest_energy,
+    _ingest_live_generation,
+    build_parser,
+)
 from nuclear_energy.models import SourceKind
 
 
@@ -33,6 +40,14 @@ def test_parser_accepts_energy_ingest_country_filters():
     assert args.command == "ingest-energy"
     assert args.country == ["ROU", "FRA"]
     assert args.since_year == 2020
+
+
+def test_parser_accepts_live_generation_ingest_options():
+    args = build_parser().parse_args(["ingest-live-generation", "--country", "ROU", "--timeout", "8"])
+
+    assert args.command == "ingest-live-generation"
+    assert args.country == "ROU"
+    assert args.timeout == 8
 
 
 def test_parser_accepts_transaction_detection_options():
@@ -125,3 +140,30 @@ def test_energy_ingest_records_success(monkeypatch):
 
     assert _ingest_energy(args) == 0
     assert calls == [(SourceKind.eia, "Ember Yearly Electricity Data", 2, 2)]
+
+
+def test_live_generation_ingest_stores_romanian_snapshot(monkeypatch):
+    snapshot = SimpleNamespace(
+        nuclear_mw=0,
+        observed_at=SimpleNamespace(isoformat=lambda: "2026-08-23T01:08:06+03:00"),
+    )
+    calls = []
+
+    monkeypatch.setattr("nuclear_energy.cli.fetch_transelectrica_live_generation", lambda **kwargs: snapshot)
+    monkeypatch.setattr("nuclear_energy.cli.upsert_live_generation_snapshots", lambda rows: calls.append(rows) or 1)
+
+    args = build_parser().parse_args(["ingest-live-generation", "--country", "ROU"])
+
+    assert _ingest_live_generation(args) == 0
+    assert calls == [[snapshot]]
+
+
+def test_live_generation_ingest_rejects_unsupported_countries():
+    args = build_parser().parse_args(["ingest-live-generation", "--country", "FRA"])
+
+    try:
+        _ingest_live_generation(args)
+    except SystemExit as exc:
+        assert "Only Romania" in str(exc)
+    else:
+        raise AssertionError("Expected unsupported country to raise SystemExit")

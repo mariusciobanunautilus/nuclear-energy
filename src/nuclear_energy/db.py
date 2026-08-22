@@ -14,7 +14,14 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from nuclear_energy.config import get_settings
-from nuclear_energy.models import CountryEnergyYear, NuclearEvent, NuclearTransaction, RawDocument, SourceKind
+from nuclear_energy.models import (
+    CountryEnergyYear,
+    LiveGenerationSnapshot,
+    NuclearEvent,
+    NuclearTransaction,
+    RawDocument,
+    SourceKind,
+)
 
 
 metadata = MetaData(schema="public")
@@ -486,6 +493,37 @@ country_energy_years = Table(
     UniqueConstraint("iso_code", "year", name="country_energy_years_iso_year_unique"),
 )
 
+live_generation_snapshots = Table(
+    "live_generation_snapshots",
+    metadata,
+    Column("id", UUID(as_uuid=False), primary_key=True, server_default=sql_text("extensions.gen_random_uuid()")),
+    Column("country_iso_code", Text, nullable=False),
+    Column("country_name", Text, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+    Column("demand_mw", Integer),
+    Column("production_mw", Integer),
+    Column("net_import_export_mw", Integer),
+    Column("nuclear_mw", Integer),
+    Column("wind_mw", Integer),
+    Column("hydro_mw", Integer),
+    Column("hydrocarbons_mw", Integer),
+    Column("coal_mw", Integer),
+    Column("solar_mw", Integer),
+    Column("biomass_mw", Integer),
+    Column("storage_mw", Integer),
+    Column("source_name", Text, nullable=False),
+    Column("source_url", Text, nullable=False),
+    Column("raw_payload", JSON, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "country_iso_code",
+        "observed_at",
+        "source_name",
+        name="live_generation_snapshots_country_observed_source_unique",
+    ),
+)
+
 nuclear_transactions = Table(
     "nuclear_transactions",
     metadata,
@@ -809,6 +847,55 @@ def upsert_country_energy_years(records: Iterable[CountryEnergyYear]) -> int:
         session.execute(
             statement.on_conflict_do_update(
                 index_elements=["iso_code", "year"],
+                set_=update_columns,
+            )
+        )
+        session.commit()
+
+    return len(rows)
+
+
+def upsert_live_generation_snapshots(snapshots: Iterable[LiveGenerationSnapshot]) -> int:
+    rows = []
+    now = datetime.now(timezone.utc)
+    for snapshot in snapshots:
+        rows.append(
+            {
+                "country_iso_code": snapshot.country_iso_code.upper(),
+                "country_name": snapshot.country_name,
+                "observed_at": snapshot.observed_at,
+                "demand_mw": snapshot.demand_mw,
+                "production_mw": snapshot.production_mw,
+                "net_import_export_mw": snapshot.net_import_export_mw,
+                "nuclear_mw": snapshot.nuclear_mw,
+                "wind_mw": snapshot.wind_mw,
+                "hydro_mw": snapshot.hydro_mw,
+                "hydrocarbons_mw": snapshot.hydrocarbons_mw,
+                "coal_mw": snapshot.coal_mw,
+                "solar_mw": snapshot.solar_mw,
+                "biomass_mw": snapshot.biomass_mw,
+                "storage_mw": snapshot.storage_mw,
+                "source_name": snapshot.source_name,
+                "source_url": snapshot.source_url,
+                "raw_payload": snapshot.raw_payload,
+                "updated_at": now,
+            }
+        )
+
+    if not rows:
+        return 0
+
+    statement = insert(live_generation_snapshots).values(rows)
+    update_columns = {
+        column: getattr(statement.excluded, column)
+        for column in rows[0]
+        if column not in {"country_iso_code", "observed_at", "source_name"}
+    }
+
+    with Session(get_engine()) as session:
+        session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["country_iso_code", "observed_at", "source_name"],
                 set_=update_columns,
             )
         )

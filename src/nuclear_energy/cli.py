@@ -31,6 +31,7 @@ from nuclear_energy.db import (
     upsert_nuclear_transactions,
     update_chunk_embeddings,
     upsert_documents,
+    upsert_live_generation_snapshots,
 )
 from nuclear_energy.models import OfficialTransactionRecord, SourceKind
 from nuclear_energy.embeddings import (
@@ -56,6 +57,7 @@ from nuclear_energy.sources.ember_electricity import (
 )
 from nuclear_energy.sources.eu_ted import fetch_ted_nuclear_procurements
 from nuclear_energy.sources.rss import fetch_rss_feeds
+from nuclear_energy.sources.transelectrica import fetch_transelectrica_live_generation
 from nuclear_energy.sources.usaspending import fetch_usaspending_nuclear_awards
 
 
@@ -140,6 +142,26 @@ def _ingest_energy(args: argparse.Namespace) -> int:
     stored = upsert_country_energy_years(records)
     _record_ingestion_success(SourceKind.eia, "Ember Yearly Electricity Data", len(records), stored)
     print(f"Stored {stored} country energy year(s) from Ember.")
+    return 0
+
+
+def _ingest_live_generation(args: argparse.Namespace) -> int:
+    country = args.country.strip().upper()
+    if country != "ROU":
+        raise SystemExit("Only Romania (ROU) live generation is supported in this first version.")
+
+    try:
+        snapshot = fetch_transelectrica_live_generation(timeout=args.timeout)
+    except httpx.HTTPError as exc:
+        print(_describe_source_http_error("Transelectrica live generation", exc))
+        return 1
+
+    stored = upsert_live_generation_snapshots([snapshot])
+    print(
+        f"Stored {stored} live generation snapshot(s) for Romania: "
+        f"nuclear {snapshot.nuclear_mw if snapshot.nuclear_mw is not None else 'n/a'} MW "
+        f"at {snapshot.observed_at.isoformat()}."
+    )
     return 0
 
 
@@ -568,6 +590,14 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_energy.add_argument("--country", action="append", help="ISO-3 country code. May be repeated.")
     ingest_energy.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout for the CSV request.")
     ingest_energy.set_defaults(func=_ingest_energy)
+
+    ingest_live_generation = subparsers.add_parser(
+        "ingest-live-generation",
+        help="Fetch near-real-time metered generation for supported countries.",
+    )
+    ingest_live_generation.add_argument("--country", default="ROU", help="ISO-3 country code. Currently only ROU.")
+    ingest_live_generation.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout for the live request.")
+    ingest_live_generation.set_defaults(func=_ingest_live_generation)
 
     ingest_usaspending = subparsers.add_parser(
         "ingest-usaspending",
