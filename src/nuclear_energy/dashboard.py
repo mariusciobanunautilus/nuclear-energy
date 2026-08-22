@@ -110,7 +110,7 @@ def main() -> None:
 
     metrics = _load_or_stop(fetch_dashboard_metrics)
     source_summaries = _load_or_stop(fetch_source_summaries)
-    source_names = [summary.source_name for summary in source_summaries]
+    source_names = _source_names_alphabetical(source_summaries)
 
     selected_page = _render_sidebar(metrics)
     _render_header(selected_page, PAGES[selected_page]["description"])
@@ -344,6 +344,7 @@ def _render_source_health(source_summaries) -> None:
     if frame.empty:
         return
 
+    frame = frame.sort_values("source_name", key=lambda column: column.str.casefold())
     frame["source_tier"] = frame["source_tier"].map(source_tier_label)
     display_frame = frame.rename(
         columns={
@@ -377,6 +378,7 @@ def _render_overview(source_summaries) -> None:
         st.info("No ingested documents yet.")
         return
 
+    source_frame = source_frame.sort_values("source_name", key=lambda column: column.str.casefold())
     st.info(
         "Overview shows source coverage and processing readiness: what public material was collected, "
         "where text extraction worked, and what is ready for search."
@@ -765,10 +767,7 @@ def _render_energy_system() -> None:
 
 def _render_events() -> None:
     country_summaries = _load_or_stop(fetch_transaction_country_summaries, limit=100)
-    country_options = [ALL_COUNTRIES] + [
-        f"{summary.country_name} ({summary.country_iso_code})"
-        for summary in country_summaries
-    ]
+    country_options = [ALL_COUNTRIES] + _country_options_alphabetical(country_summaries)
     controls = st.columns([2, 1, 1])
     selected_country = controls[0].selectbox("Country", country_options, key="events_country")
     review_status = controls[1].selectbox(
@@ -796,10 +795,7 @@ def _render_events() -> None:
 
 def _render_transactions() -> None:
     country_summaries = _load_or_stop(fetch_transaction_country_summaries, limit=100)
-    country_options = [ALL_COUNTRIES] + [
-        f"{summary.country_name} ({summary.country_iso_code})"
-        for summary in country_summaries
-    ]
+    country_options = [ALL_COUNTRIES] + _country_options_alphabetical(country_summaries)
     selected_country = st.selectbox("Country", country_options, key="transaction_country")
     selected_iso_code = _selected_country_iso_code(selected_country)
 
@@ -1333,7 +1329,8 @@ def _render_review_history(history) -> None:
 
 def _render_entities() -> None:
     entities = _load_or_stop(fetch_entity_summaries, limit=150)
-    frame = _frame(entities)
+    sorted_entities = _items_alphabetical(entities, "canonical_name")
+    frame = _frame(sorted_entities)
     if frame.empty:
         st.info("No entity links yet. Run detect-events and sync-events after applying the event-layer migration.")
         return
@@ -1351,7 +1348,7 @@ def _render_entities() -> None:
     st.caption("Entity profiles group source-backed nuclear events by companies, agencies, regulators, utilities, and vendors.")
     st.dataframe(display_frame, use_container_width=True, hide_index=True, height=320)
 
-    options = {f"{item.canonical_name} ({item.event_count})": item.id for item in entities}
+    options = {f"{item.canonical_name} ({item.event_count})": item.id for item in sorted_entities}
     selected = st.selectbox("Entity Profile", list(options), key="entity_profile")
     events = _load_or_stop(fetch_events_for_entity, options[selected], limit=75)
     st.markdown("#### Entity Event Timeline")
@@ -1360,7 +1357,8 @@ def _render_entities() -> None:
 
 def _render_projects() -> None:
     projects = _load_or_stop(fetch_project_summaries, limit=150)
-    frame = _frame(projects)
+    sorted_projects = _items_alphabetical(projects, "canonical_name")
+    frame = _frame(sorted_projects)
     if frame.empty:
         st.info("No project links yet. Run detect-events and sync-events after applying the event-layer migration.")
         return
@@ -1379,7 +1377,10 @@ def _render_projects() -> None:
     st.caption("Project profiles group source-backed events by plant, reactor, fuel facility, mine, or program.")
     st.dataframe(display_frame, use_container_width=True, hide_index=True, height=320)
 
-    options = {f"{item.canonical_name} ({item.country_iso_code or 'n/a'}, {item.event_count})": item.id for item in projects}
+    options = {
+        f"{item.canonical_name} ({item.country_iso_code or 'n/a'}, {item.event_count})": item.id
+        for item in sorted_projects
+    }
     selected = st.selectbox("Project Profile", list(options), key="project_profile")
     events = _load_or_stop(fetch_events_for_project, options[selected], limit=75)
     st.markdown("#### Project Event Timeline")
@@ -2101,12 +2102,27 @@ def _selected_country_iso_code(selected_country: str) -> str | None:
 
 def _country_options_alphabetical(summaries) -> list[str]:
     return [
-        f"{row.country_name} ({row.iso_code})"
+        f"{row.country_name} ({_country_iso_code(row)})"
         for row in sorted(
             summaries,
-            key=lambda row: ((row.country_name or "").casefold(), row.iso_code or ""),
+            key=lambda row: ((row.country_name or "").casefold(), _country_iso_code(row)),
         )
     ]
+
+
+def _country_iso_code(row) -> str:
+    return getattr(row, "iso_code", None) or getattr(row, "country_iso_code", None) or ""
+
+
+def _source_names_alphabetical(source_summaries) -> list[str]:
+    return sorted(
+        [summary.source_name for summary in source_summaries if summary.source_name],
+        key=str.casefold,
+    )
+
+
+def _items_alphabetical(items, attribute: str) -> list:
+    return sorted(items, key=lambda item: str(getattr(item, attribute, "") or "").casefold())
 
 
 def _source_value(source_name: str) -> str | None:

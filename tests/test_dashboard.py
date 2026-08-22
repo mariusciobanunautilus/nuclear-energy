@@ -35,6 +35,7 @@ from nuclear_energy.dashboard import (
     _secret_matches,
     _split_review_values,
     _source_freshness_warnings,
+    _source_names_alphabetical,
     _stage_label,
     _technology_detail_frame,
     _transaction_readout,
@@ -253,6 +254,34 @@ def test_country_options_alphabetical_sorts_energy_selector_by_country_name() ->
         "Belgium (BEL)",
         "China (CHN)",
         "United States (USA)",
+    ]
+
+
+def test_country_options_alphabetical_sorts_transaction_selector_by_country_name() -> None:
+    summaries = [
+        SimpleNamespace(country_name="Poland", country_iso_code="POL"),
+        SimpleNamespace(country_name="Canada", country_iso_code="CAN"),
+        SimpleNamespace(country_name="China", country_iso_code="CHN"),
+    ]
+
+    assert _country_options_alphabetical(summaries) == [
+        "Canada (CAN)",
+        "China (CHN)",
+        "Poland (POL)",
+    ]
+
+
+def test_source_names_alphabetical_sorts_source_selectors() -> None:
+    summaries = [
+        SimpleNamespace(source_name="World Nuclear News"),
+        SimpleNamespace(source_name="ANS Nuclear Newswire"),
+        SimpleNamespace(source_name="IAEA Top News"),
+    ]
+
+    assert _source_names_alphabetical(summaries) == [
+        "ANS Nuclear Newswire",
+        "IAEA Top News",
+        "World Nuclear News",
     ]
 
 
