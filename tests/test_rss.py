@@ -65,3 +65,33 @@ def test_fetch_rss_feed_prefers_known_title_over_generic_feed_title(monkeypatch)
     documents = rss.fetch_rss_feed("https://www.onr.org.uk/rss-news", limit=1)
 
     assert documents[0].source_name == "UK Office for Nuclear Regulation News"
+
+
+def test_fetch_rss_feeds_skips_duplicate_entries_across_feeds(monkeypatch):
+    def parse(feed_url):
+        class Feed:
+            feed = {"title": feed_url}
+            entries = [
+                {
+                    "id": "shared-entry",
+                    "title": f"Shared update from {feed_url}",
+                    "link": f"{feed_url}/shared",
+                },
+                {
+                    "id": f"unique-{feed_url}",
+                    "title": f"Unique update from {feed_url}",
+                    "link": f"{feed_url}/unique",
+                },
+            ]
+
+        return Feed()
+
+    monkeypatch.setattr(rss.feedparser, "parse", parse)
+
+    documents = rss.fetch_rss_feeds(["https://example.com/a", "https://example.com/b"])
+
+    assert [document.external_id for document in documents] == [
+        "shared-entry",
+        "unique-https://example.com/a",
+        "unique-https://example.com/b",
+    ]

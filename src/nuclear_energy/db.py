@@ -524,30 +524,30 @@ def get_engine():
 
 
 def upsert_documents(documents: Iterable[RawDocument]) -> int:
-    rows = []
+    rows_by_key: dict[tuple[str, str], dict[str, object]] = {}
     now = datetime.now(timezone.utc)
     for document in documents:
         payload = document.model_dump(mode="json")
-        rows.append(
-            {
-                "source_kind": document.source_kind.value,
-                "source_name": document.source_name,
-                "external_id": document.external_id,
-                "title": document.title,
-                "url": document.url_text,
-                "published_at": document.published_at,
-                "summary": document.summary,
-                "content": document.content,
-                "authors": document.authors,
-                "tags": document.tags,
-                "raw_payload": payload,
-                "source_tier": source_tier_for_kind(document.source_kind.value, document.source_name),
-                "ingested_at": now,
-                "last_seen_at": now,
-                "updated_at": now,
-            }
-        )
+        source_kind = document.source_kind.value
+        rows_by_key[(source_kind, document.external_id)] = {
+            "source_kind": source_kind,
+            "source_name": document.source_name,
+            "external_id": document.external_id,
+            "title": document.title,
+            "url": document.url_text,
+            "published_at": document.published_at,
+            "summary": document.summary,
+            "content": document.content,
+            "authors": document.authors,
+            "tags": document.tags,
+            "raw_payload": payload,
+            "source_tier": source_tier_for_kind(source_kind, document.source_name),
+            "ingested_at": now,
+            "last_seen_at": now,
+            "updated_at": now,
+        }
 
+    rows = list(rows_by_key.values())
     if not rows:
         return 0
 

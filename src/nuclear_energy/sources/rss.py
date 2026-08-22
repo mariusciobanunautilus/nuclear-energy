@@ -95,6 +95,12 @@ def fetch_rss_feed(feed_url: str, *, limit: int | None = None) -> list[RawDocume
 
 def fetch_rss_feeds(feed_urls: Iterable[str], *, limit_per_feed: int | None = None) -> list[RawDocument]:
     documents: list[RawDocument] = []
+    seen_keys: set[tuple[SourceKind, str]] = set()
     for feed_url in feed_urls:
-        documents.extend(fetch_rss_feed(feed_url, limit=limit_per_feed))
+        for document in fetch_rss_feed(feed_url, limit=limit_per_feed):
+            key = (document.source_kind, document.external_id)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            documents.append(document)
     return documents
