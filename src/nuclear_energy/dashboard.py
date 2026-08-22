@@ -148,14 +148,14 @@ def _apply_theme() -> None:
         """
         <style>
         :root {
-            --surface: #ffffff;
-            --surface-muted: #f5f7f9;
-            --line: #dbe3ea;
-            --ink: #16202a;
-            --muted: #647383;
-            --accent: #27736b;
-            --accent-soft: #e6f3ef;
-            --warning-soft: #fff5dc;
+            --ux-surface: var(--secondary-background-color);
+            --ux-page: var(--background-color);
+            --ux-line: rgba(128, 142, 156, 0.35);
+            --ux-ink: var(--text-color);
+            --ux-muted: rgba(128, 142, 156, 0.95);
+            --ux-accent: var(--primary-color);
+            --ux-accent-soft: rgba(255, 75, 75, 0.12);
+            --ux-warning-soft: rgba(255, 193, 7, 0.14);
         }
         .block-container {
             padding-top: 1.35rem;
@@ -166,34 +166,41 @@ def _apply_theme() -> None:
             letter-spacing: 0;
         }
         div[data-testid="stMetric"] {
-            background: var(--surface);
-            border: 1px solid var(--line);
+            background: var(--ux-surface);
+            border: 1px solid var(--ux-line);
             border-radius: 8px;
             padding: 0.75rem 0.85rem;
             min-height: 92px;
         }
         div[data-testid="stMetric"] label {
-            color: var(--muted);
+            color: var(--ux-muted);
         }
         div[data-testid="stMetricValue"] {
-            color: var(--ink);
+            color: var(--ux-ink);
             font-size: 1.5rem;
         }
         section[data-testid="stSidebar"] {
-            background: #f7f9fb;
-            border-right: 1px solid var(--line);
+            background: var(--ux-surface);
+            border-right: 1px solid var(--ux-line);
+        }
+        section[data-testid="stSidebar"],
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] span,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] {
+            color: var(--ux-ink);
         }
         section[data-testid="stSidebar"] div[role="radiogroup"] label {
             border-radius: 8px;
             padding: 0.18rem 0.35rem;
         }
         .ux-hero {
-            border-bottom: 1px solid var(--line);
+            border-bottom: 1px solid var(--ux-line);
             padding: 0.2rem 0 1rem 0;
             margin-bottom: 1rem;
         }
         .ux-kicker {
-            color: var(--accent);
+            color: var(--ux-accent);
             font-size: 0.78rem;
             font-weight: 700;
             letter-spacing: 0.08em;
@@ -201,20 +208,20 @@ def _apply_theme() -> None:
             margin-bottom: 0.2rem;
         }
         .ux-title {
-            color: var(--ink);
+            color: var(--ux-ink);
             font-size: clamp(1.7rem, 2.6vw, 2.5rem);
             font-weight: 760;
             line-height: 1.08;
             margin: 0;
         }
         .ux-description {
-            color: var(--muted);
+            color: var(--ux-muted);
             max-width: 840px;
             margin-top: 0.4rem;
             font-size: 1rem;
         }
         div[data-testid="stDataFrame"] {
-            border: 1px solid var(--line);
+            border: 1px solid var(--ux-line);
             border-radius: 8px;
             overflow: hidden;
         }
