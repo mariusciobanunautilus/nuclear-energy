@@ -13,6 +13,7 @@ on:
           - official-transactions
           - documents
           - energy
+          - live-generation
   schedule:
     - cron: "17 6 * * *"
 
@@ -47,7 +48,7 @@ jobs:
           fi
 
           case "$INGEST_MODE" in
-            all|official-transactions|documents|energy)
+            all|official-transactions|documents|energy|live-generation)
               echo "Running public ingest mode: $INGEST_MODE"
               ;;
             *)
@@ -75,6 +76,10 @@ jobs:
 
           if [ "$INGEST_MODE" = "all" ] || [ "$INGEST_MODE" = "energy" ]; then
             nuclear-energy ingest-energy --since-year 2000
+          fi
+
+          if [ "$INGEST_MODE" = "all" ] || [ "$INGEST_MODE" = "live-generation" ]; then
+            nuclear-energy ingest-live-generation --country ROU
           fi
 
           if [ "$INGEST_MODE" = "all" ] || [ "$INGEST_MODE" = "official-transactions" ]; then

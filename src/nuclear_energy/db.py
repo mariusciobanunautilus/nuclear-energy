@@ -912,7 +912,10 @@ def upsert_live_generation_snapshots(snapshots: Iterable[LiveGenerationSnapshot]
         if column not in {"country_iso_code", "observed_at", "source_name"}
     }
 
-    with Session(get_engine()) as session:
+    engine = get_engine()
+    live_generation_snapshots.create(engine, checkfirst=True)
+
+    with Session(engine) as session:
         session.execute(
             statement.on_conflict_do_update(
                 index_elements=["country_iso_code", "observed_at", "source_name"],
