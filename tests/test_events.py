@@ -72,6 +72,29 @@ def test_detect_nuclear_events_marks_discovery_feed_items_for_review():
     assert "needs_review" in event.materiality_flags
 
 
+def test_detect_nuclear_events_captures_controlled_grid_shutdown_wording():
+    events = detect_nuclear_events(
+        [
+            _document(
+                title="Current report regarding the controlled shutdown of Cernavoda NPP Unit 2",
+                source_name="Nuclearelectrica IR",
+                source_kind="rss",
+                summary=(
+                    "Unit 2 of Cernavoda Nuclear Power Plant was disconnected from the national power grid "
+                    "because of low Danube water levels in Romania."
+                ),
+            )
+        ]
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "outage"
+    assert event.country_iso_code == "ROU"
+    assert event.project_name == "Cernavoda"
+    assert "supply_risk" in event.materiality_flags
+
+
 def test_detect_nuclear_events_captures_supply_contract_current_items():
     events = detect_nuclear_events(
         [

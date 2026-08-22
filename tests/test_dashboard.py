@@ -24,6 +24,7 @@ from nuclear_energy.dashboard import (
     _join_labels,
     _join_review_reasons,
     _energy_comparison_readout,
+    _energy_operational_status,
     _energy_period_comparison_frame,
     _latest_energy_record,
     _missing_workflow_secret_names,
@@ -345,6 +346,62 @@ def test_energy_current_events_frame_formats_compact_status_rows() -> None:
     assert result.iloc[0]["date"] == "2026-08-13"
     assert result.iloc[0]["plant_or_project"] == "country-wide"
     assert result.iloc[0]["event"] == "Cernavoda Unit 2 shut down"
+
+
+def test_energy_operational_status_marks_all_units_offline_from_unit_outages() -> None:
+    events = [
+        SimpleNamespace(
+            event_date=datetime(2026, 7, 28, 9, 0, tzinfo=timezone.utc),
+            event_type="outage",
+            title="Controlled shutdown of Cernavoda NPP Unit 1",
+            summary="Unit 1 was disconnected from the national power grid.",
+            project_name="Cernavoda",
+        ),
+        SimpleNamespace(
+            event_date=datetime(2026, 8, 13, 11, 0, tzinfo=timezone.utc),
+            event_type="outage",
+            title="Controlled shutdown of Cernavoda NPP Unit 2",
+            summary="Unit 2 was shut down because of low Danube water levels.",
+            project_name="Cernavoda",
+        ),
+    ]
+    reactors = [
+        SimpleNamespace(reactor_name="Cernavoda 1", net_capacity_mwe=650),
+        SimpleNamespace(reactor_name="Cernavoda 2", net_capacity_mwe=650),
+    ]
+
+    status = _energy_operational_status(events, reactors)
+
+    assert status.label == "All units offline"
+    assert status.available_capacity_gw == 0
+    assert status.offline_capacity_gw == 1.3
+    assert status.latest_event_date == datetime(2026, 8, 13, 11, 0, tzinfo=timezone.utc)
+
+
+def test_energy_operational_status_uses_latest_unit_state() -> None:
+    events = [
+        SimpleNamespace(
+            event_date=datetime(2026, 8, 13, 11, 0, tzinfo=timezone.utc),
+            event_type="outage",
+            title="Controlled shutdown of Cernavoda NPP Unit 2",
+            summary="Unit 2 was shut down.",
+            project_name="Cernavoda",
+        ),
+        SimpleNamespace(
+            event_date=datetime(2026, 8, 20, 8, 0, tzinfo=timezone.utc),
+            event_type="restart",
+            title="Reconnection of Cernavoda NPP Unit 2",
+            summary="Unit 2 was reconnected to the national power grid.",
+            project_name="Cernavoda",
+        ),
+    ]
+    reactors = [SimpleNamespace(reactor_name="Cernavoda 2", net_capacity_mwe=650)]
+
+    status = _energy_operational_status(events, reactors)
+
+    assert status.label == "No outage signal"
+    assert status.available_capacity_gw == 0.65
+    assert status.offline_capacity_gw == 0
 
 
 def test_secret_matches_requires_exact_pin() -> None:

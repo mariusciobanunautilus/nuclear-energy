@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hmac
 import os
-from dataclasses import asdict
+import re
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -102,6 +103,17 @@ PAGES = {
         "renderer": "_render_automation",
     },
 }
+
+
+@dataclass(frozen=True)
+class EnergyOperationalStatus:
+    label: str
+    available_capacity_gw: float | None
+    offline_capacity_gw: float | None
+    total_capacity_gw: float | None
+    latest_event_date: datetime | None
+    evidence_count: int
+    summary: str
 
 
 def main() -> None:
@@ -562,6 +574,15 @@ def _render_energy_system() -> None:
         st.info("No annual energy rows matched.")
         return
     country_transactions = _load_or_stop(fetch_recent_transactions, limit=80, country_iso_code=selected_iso_code)
+    current_events = _load_or_stop(
+        fetch_recent_events,
+        limit=12,
+        country_iso_code=selected_iso_code,
+        since=datetime.now(timezone.utc) - timedelta(days=90),
+        themes=["operations", "supply_risk"],
+    )
+    selected_technology_rows = _load_or_stop(fetch_reactor_technology_summaries, selected_iso_code)
+    operational_status = _energy_operational_status(current_events, selected_technology_rows)
 
     latest = _latest_energy_record(years)
     country_columns = st.columns(5)
@@ -571,19 +592,20 @@ def _render_energy_system() -> None:
     country_columns[3].metric("Nuclear Capacity", _format_gw(latest.nuclear_capacity_gw))
     country_columns[4].metric("Usage", _format_percent(latest.estimated_capacity_factor_percent))
 
-    current_events = _load_or_stop(
-        fetch_recent_events,
-        limit=8,
-        country_iso_code=selected_iso_code,
-        since=datetime.now(timezone.utc) - timedelta(days=45),
-    )
+    st.markdown("#### Source-Backed Current Operations")
+    status_columns = st.columns(4)
+    status_columns[0].metric("Operational Status", operational_status.label)
+    status_columns[1].metric("Available Now", _format_gw(operational_status.available_capacity_gw))
+    status_columns[2].metric("Offline / At Risk", _format_gw(operational_status.offline_capacity_gw))
+    status_columns[3].metric("Latest Signal", _format_datetime(operational_status.latest_event_date) or "n/a")
+    st.caption(operational_status.summary)
+
     st.markdown(f"#### {latest.country_name} Current Nuclear Status")
     st.caption(
         "Recent source-backed events for the selected country. Annual electricity data remains historical; this panel captures current outages, restarts, policy moves, and operational changes."
     )
     _render_energy_current_events(current_events)
 
-    selected_technology_rows = _load_or_stop(fetch_reactor_technology_summaries, selected_iso_code)
     selected_technology_frame = _technology_detail_frame(_frame(selected_technology_rows))
     st.markdown(f"#### {latest.country_name} Reactor Technologies")
     st.caption(
@@ -1642,6 +1664,213 @@ def _has_nuclear_energy_data(record) -> bool:
             "nuclear_share_electricity_percent",
         )
     )
+
+
+def _energy_operational_status(events, reactor_rows) -> EnergyOperationalStatus:
+    total_capacity_gw = _reactor_capacity_gw(reactor_rows)
+    latest_event_date = max((event.event_date for event in events if event.event_date), default=None)
+    operational_events = [
+        event
+        for event in events
+        if getattr(event, "event_type", None) in {"outage", "restart", "reported_development"}
+    ]
+    if not operational_events:
+        return EnergyOperationalStatus(
+            label="No current signal",
+            available_capacity_gw=None,
+            offline_capacity_gw=None,
+            total_capacity_gw=total_capacity_gw,
+            latest_event_date=latest_event_date,
+            evidence_count=0,
+            summary=(
+                "No recent source-backed outage or reconnection event is available. "
+                "The cards above remain annual historical electricity statistics."
+            ),
+        )
+
+    units = _reactor_unit_capacity_map(reactor_rows)
+    all_unit_ids = set(units)
+    unit_states: dict[str, tuple[str, datetime | None]] = {}
+    plant_wide_state: tuple[str, datetime | None] | None = None
+    for event in sorted(
+        operational_events,
+        key=lambda item: item.event_date or datetime.min.replace(tzinfo=timezone.utc),
+    ):
+        state = _operational_event_state(event)
+        if state is None:
+            continue
+        event_units = _unit_ids_from_event(event)
+        if event_units:
+            for unit_id in event_units:
+                unit_states[unit_id] = (state, event.event_date)
+        elif _is_plant_wide_operational_event(event):
+            plant_wide_state = (state, event.event_date)
+
+    if plant_wide_state and not unit_states:
+        offline_capacity_gw = total_capacity_gw if plant_wide_state[0] == "offline" else 0.0
+        return _energy_operational_status_from_capacity(
+            offline_capacity_gw=offline_capacity_gw,
+            total_capacity_gw=total_capacity_gw,
+            latest_event_date=latest_event_date,
+            evidence_count=len(operational_events),
+        )
+
+    offline_units = {unit_id for unit_id, (state, _date) in unit_states.items() if state == "offline"}
+    if all_unit_ids and all_unit_ids.issubset(set(unit_states)):
+        offline_capacity_gw = sum(units.get(unit_id, 0.0) for unit_id in offline_units)
+        return _energy_operational_status_from_capacity(
+            offline_capacity_gw=offline_capacity_gw,
+            total_capacity_gw=total_capacity_gw,
+            latest_event_date=latest_event_date,
+            evidence_count=len(operational_events),
+        )
+
+    known_offline_capacity_gw = sum(units.get(unit_id, 0.0) for unit_id in offline_units) or None
+    return EnergyOperationalStatus(
+        label="Partial current signal",
+        available_capacity_gw=(
+            None
+            if total_capacity_gw is None or known_offline_capacity_gw is None
+            else total_capacity_gw - known_offline_capacity_gw
+        ),
+        offline_capacity_gw=known_offline_capacity_gw,
+        total_capacity_gw=total_capacity_gw,
+        latest_event_date=latest_event_date,
+        evidence_count=len(operational_events),
+        summary=(
+            "Recent source-backed operational events were found, but they do not cover every loaded reactor unit. "
+            "Use the event table below before treating the available-capacity estimate as complete."
+        ),
+    )
+
+
+def _energy_operational_status_from_capacity(
+    *,
+    offline_capacity_gw: float | None,
+    total_capacity_gw: float | None,
+    latest_event_date: datetime | None,
+    evidence_count: int,
+) -> EnergyOperationalStatus:
+    available_capacity_gw = None
+    if offline_capacity_gw is not None and total_capacity_gw is not None:
+        available_capacity_gw = max(total_capacity_gw - offline_capacity_gw, 0.0)
+
+    if available_capacity_gw == 0 and total_capacity_gw:
+        label = "All units offline"
+    elif offline_capacity_gw and offline_capacity_gw > 0:
+        label = "Partial outage"
+    elif available_capacity_gw is not None:
+        label = "No outage signal"
+    else:
+        label = "Current signal"
+
+    summary = (
+        "Current operation is estimated from recent source-backed outage/reconnection events and loaded reactor capacity. "
+        "Annual generation and usage cards above are historical and are not overwritten by outage events."
+    )
+    return EnergyOperationalStatus(
+        label=label,
+        available_capacity_gw=available_capacity_gw,
+        offline_capacity_gw=offline_capacity_gw,
+        total_capacity_gw=total_capacity_gw,
+        latest_event_date=latest_event_date,
+        evidence_count=evidence_count,
+        summary=summary,
+    )
+
+
+def _reactor_capacity_gw(reactor_rows) -> float | None:
+    values = [getattr(row, "net_capacity_mwe", None) for row in reactor_rows]
+    values = [float(value) for value in values if value is not None]
+    if not values:
+        return None
+    return sum(values) / 1000
+
+
+def _reactor_unit_capacity_map(reactor_rows) -> dict[str, float]:
+    unit_map = {}
+    for row in reactor_rows:
+        unit_ids = _unit_ids_from_reactor_name(getattr(row, "reactor_name", ""))
+        capacity = getattr(row, "net_capacity_mwe", None)
+        if capacity is None:
+            continue
+        for unit_id in unit_ids:
+            unit_map[unit_id] = float(capacity) / 1000
+    return unit_map
+
+
+def _operational_event_state(event) -> str | None:
+    text = _event_text(event)
+    if getattr(event, "event_type", None) == "outage" or any(
+        phrase in text
+        for phrase in (
+            "controlled shutdown",
+            "shutting down",
+            "shut down",
+            "shutdown",
+            "disconnected from the grid",
+            "disconnected from the national power grid",
+            "offline",
+            "taken offline",
+        )
+    ):
+        return "offline"
+    if getattr(event, "event_type", None) == "restart" or any(
+        phrase in text
+        for phrase in (
+            "reconnected",
+            "resynchronization",
+            "resynchronisation",
+            "returned to service",
+            "return to nominal power",
+            "continues to operate at nominal capacity",
+            "remains connected",
+        )
+    ):
+        return "online"
+    return None
+
+
+def _is_plant_wide_operational_event(event) -> bool:
+    text = _event_text(event)
+    return any(
+        phrase in text
+        for phrase in (
+            "power plant shuts down",
+            "plant shuts down",
+            "only nuclear power plant",
+            "all units",
+            "entire plant",
+        )
+    )
+
+
+def _unit_ids_from_event(event) -> set[str]:
+    return _unit_ids_from_text(_event_text(event))
+
+
+def _unit_ids_from_text(text: str | None) -> set[str]:
+    if not text:
+        return set()
+    return {match.group(1) for match in re.finditer(r"\bunit\s*([0-9]+)\b", text.casefold())}
+
+
+def _unit_ids_from_reactor_name(text: str | None) -> set[str]:
+    if not text:
+        return set()
+    lowered = text.casefold()
+    unit_ids = _unit_ids_from_text(lowered)
+    if unit_ids:
+        return unit_ids
+    trailing_unit = re.search(r"\b([0-9]+)\s*$", lowered)
+    return {trailing_unit.group(1)} if trailing_unit else set()
+
+
+def _event_text(event) -> str:
+    return " ".join(
+        str(getattr(event, field, "") or "")
+        for field in ("title", "summary", "project_name")
+    ).casefold()
 
 
 def _select_energy_comparison_records(records, latest, mode: str):
